@@ -10,7 +10,7 @@ interface EventLogProps {
   onUpdateEventNotes: (id: string, notes: string) => void;
   onJumpToTime: (time: number, quarter?: Quarter) => void;
   // 新規追加
-  appMode: 'game' | 'practice';
+  appMode: 'game' | 'live' | 'practice';
 }
 
 export const EventLog: React.FC<EventLogProps> = ({
@@ -280,7 +280,7 @@ export const EventLog: React.FC<EventLogProps> = ({
               <option value="stl_blk">スティール/ブロック</option>
               <option value="pf">ファウル</option>
               <option value="sub">選手交代</option>
-              <option value="timeout">タイムアウト</option>
+<option value="timeout">タイムアウト</option>
             </>
           ) : (
             <option value="practice">練習タグイベント</option>
@@ -291,13 +291,21 @@ export const EventLog: React.FC<EventLogProps> = ({
       {/* 履歴リスト */}
       <div style={{ flex: 1, overflowY: 'auto', maxHeight: '650px', display: 'flex', flexDirection: 'column', gap: '8px', paddingRight: '4px' }}>
         {sortedEvents.length === 0 ? (
-          <div style={{ textAlign: 'center', color: '#666', padding: '40px 0', fontSize: '0.9rem' }}>
-            ログデータはありません。
+          <div className="empty-state">
+            <div className="empty-state-icon">📋</div>
+            <div className="empty-state-text">
+              {events.length === 0
+                ? <>ログデータはありません。<br /><span style={{ fontSize: '0.8rem', color: '#444' }}>スタッツを記録するとここに表示されます。</span></>
+                : <>フィルター条件に一致するログはありません。<br /><span style={{ fontSize: '0.8rem', color: '#444' }}>絞り込み条件を変更してみてください。</span></>
+              }
+            </div>
           </div>
         ) : (
           sortedEvents.map(event => {
             const player = getPlayerInfo(event.playerId, event.team);
             const isSubEvent = event.type === 'SUB_IN' || event.type === 'SUB_OUT';
+            const isLiveMode = appMode === 'live';
+            const isGameOrLive = appMode === 'game' || appMode === 'live';
             
             return (
               <div
@@ -307,7 +315,7 @@ export const EventLog: React.FC<EventLogProps> = ({
                   background: 'rgba(255, 255, 255, 0.01)',
                   border: '1px solid var(--glass-border)',
                   borderRadius: 'var(--radius-sm)',
-                  padding: '10px',
+                  padding: isLiveMode ? '6px 8px' : '10px',
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '6px',
@@ -323,117 +331,260 @@ export const EventLog: React.FC<EventLogProps> = ({
                   e.currentTarget.style.borderColor = 'var(--glass-border)';
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {/* 再生ジャンプボタン */}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onJumpToTime(event.timestamp, event.quarter); }}
-                      className="btn"
-                      style={{
-                        padding: '3px 8px',
-                        background: 'rgba(255, 107, 0, 0.1)',
-                        color: 'var(--accent-color)',
-                        fontSize: '0.8rem',
-                        fontWeight: 700,
-                        border: '1px solid rgba(255, 107, 0, 0.2)',
-                        borderRadius: '4px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '3px'
-                      }}
-                      title="このプレイを再生"
-                    >
-                      <Play size={10} fill="var(--accent-color)" /> {formatTime(event.timestamp)}
-                    </button>
+                {isLiveMode ? (
+                  /* -------------------------------------------------------- */
+                  /* 🔴 LIVE MODE: 極小コンパクト1行表示 (横幅はみ出し防止)   */
+                  /* -------------------------------------------------------- */
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '3px', width: '100%' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '3px', overflow: 'hidden', flex: 1, minWidth: 0 }}>
+                      {/* 再生ジャンプボタン (極小) */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onJumpToTime(event.timestamp, event.quarter); }}
+                        className="btn"
+                        style={{
+                          padding: '1px 3px',
+                          background: 'rgba(255, 107, 0, 0.08)',
+                          color: 'var(--accent-color)',
+                          fontSize: '0.68rem',
+                          fontWeight: 700,
+                          border: '1px solid rgba(255, 107, 0, 0.15)',
+                          borderRadius: '3px',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                          display: 'inline-block'
+                        }}
+                        title="このプレイを再生"
+                      >
+                        {formatTime(event.timestamp)}
+                      </button>
 
-                    {/* クオーター/練習バッジ */}
-                    <span style={{
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      background: appMode === 'practice' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(255, 107, 0, 0.1)',
-                      color: appMode === 'practice' ? 'var(--color-info)' : 'var(--accent-color)',
-                      padding: '2px 6px',
-                      borderRadius: '4px',
-                      border: '1px solid',
-                      borderColor: appMode === 'practice' ? 'rgba(59, 130, 246, 0.3)' : 'rgba(255, 107, 0, 0.2)'
-                    }}>
-                      {appMode === 'practice' ? '練習' : event.quarter}
-                    </span>
-
-                    {/* 試合時計の残り時間 */}
-                    {appMode !== 'practice' && event.gameTime !== undefined && (
-                      <span style={{ fontSize: '0.75rem', color: '#bbb', display: 'flex', alignItems: 'center', gap: '3px', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--glass-border)' }} title="残り試合時間">
-                        <Clock size={10} style={{ color: 'var(--accent-color)' }} />
-                        {formatTime(event.gameTime)}
-                      </span>
-                    )}
-
-                    {/* チーム表示 (試合モードのみ) */}
-                    {appMode === 'game' && (
+                      {/* クオーターバッジ */}
                       <span style={{
-                        fontSize: '0.7rem',
-                        fontWeight: 600,
-                        color: event.team === 'home' ? 'var(--accent-color)' : 'var(--color-danger)'
+                        fontSize: '0.62rem',
+                        fontWeight: 700,
+                        background: 'rgba(255, 107, 0, 0.05)',
+                        color: 'var(--accent-color)',
+                        padding: '1px 3px',
+                        borderRadius: '3px',
+                        border: '1px solid rgba(255,255,255,0.03)',
+                        whiteSpace: 'nowrap'
                       }}>
-                        {event.team === 'home' ? '自' : '相手'}
+                        {event.quarter}
                       </span>
-                    )}
 
-                    {/* 選手番号と名前 (交代とタイムアウト以外) */}
-                    {appMode === 'game' && event.type !== 'TIMEOUT' && !isSubEvent && (
-                      <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>
-                        {player.number ? `#${player.number} ` : ''}{player.name}
-                      </span>
-                    )}
-                    
-                    {/* 交代表示 */}
-                    {appMode === 'game' && isSubEvent && (
-                      <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#ccc', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <RefreshCw size={12} style={{ color: 'var(--accent-color)' }} /> {renderSubstitutionText(event)}
-                      </span>
-                    )}
+                      {/* 試合時計の残り時間 (時計アイコンなし) */}
+                      {event.gameTime !== undefined && (
+                        <span style={{
+                          fontSize: '0.62rem',
+                          color: '#aaa',
+                          background: 'rgba(255,255,255,0.03)',
+                          padding: '1px 3px',
+                          borderRadius: '3px',
+                          border: '1px solid var(--glass-border)',
+                          whiteSpace: 'nowrap'
+                        }} title="残り試合時間">
+                          {formatTime(event.gameTime)}
+                        </span>
+                      )}
 
-                    {/* タイムアウト表示 */}
-                    {appMode === 'game' && event.type === 'TIMEOUT' && (
-                      <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#ffeb3b' }}>
-                        タイムアウト
+                      {/* チーム表示 (自/他) */}
+                      <span style={{
+                        fontSize: '0.62rem',
+                        fontWeight: 700,
+                        color: event.team === 'home' ? 'var(--accent-color)' : 'var(--color-danger)',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {event.team === 'home' ? '自' : '他'}
                       </span>
-                    )}
 
-                    {/* 練習タグ名 */}
-                    {appMode === 'practice' && (
-                      <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-color)' }}>
-                        {event.practiceTag}
-                      </span>
-                    )}
+                      {/* 選手番号と名前 (交代とタイムアウト以外) */}
+                      {event.type !== 'TIMEOUT' && !isSubEvent && (
+                        <span style={{
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          color: '#fff',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          flex: 1,
+                          minWidth: 0
+                        }}>
+                          {player.number ? `#${player.number} ` : ''}{player.name}
+                        </span>
+                      )}
+                      
+                      {/* 交代表示 */}
+                      {isSubEvent && (
+                        <span style={{
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          color: '#ccc',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '2px',
+                          flex: 1,
+                          minWidth: 0
+                        }}>
+                          <RefreshCw size={9} style={{ color: 'var(--accent-color)' }} /> {renderSubstitutionText(event)}
+                        </span>
+                      )}
+
+                      {/* タイムアウト表示 */}
+                      {event.type === 'TIMEOUT' && (
+                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#ffeb3b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
+                          タイムアウト
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
+                      {/* スタッツアクションバッジ */}
+                      {!isSubEvent && (
+                        <span className={`badge-stat badge-${event.type}`} style={{ fontSize: '0.62rem', padding: '1px 4px', whiteSpace: 'nowrap', height: 'auto', lineHeight: '1.2' }}>
+                          {getStatLabel(event.type)}
+                        </span>
+                      )}
+
+                      {/* 削除ボタン */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onRemoveEvent(event.id); }}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#555',
+                          cursor: 'pointer',
+                          padding: '1px'
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-danger)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = '#555')}
+                        title="削除"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </div>
                   </div>
+                ) : (
+                  /* -------------------------------------------------------- */
+                  /* 🟢 STANDARD MODE (GAME/PRACTICE): 通常の見やすい1行表示  */
+                  /* -------------------------------------------------------- */
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', width: '100%' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', flex: 1 }}>
+                      {/* 再生ジャンプボタン */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onJumpToTime(event.timestamp, event.quarter); }}
+                        className="btn"
+                        style={{
+                          padding: '3px 8px',
+                          background: 'rgba(255, 107, 0, 0.1)',
+                          color: 'var(--accent-color)',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          border: '1px solid rgba(255, 107, 0, 0.2)',
+                          borderRadius: '4px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                          cursor: 'pointer'
+                        }}
+                        title="このプレイを再生"
+                      >
+                        <Play size={10} fill="var(--accent-color)" /> {formatTime(event.timestamp)}
+                      </button>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    {/* スタッツアクションバッジ (試合モードかつ交代以外) */}
-                    {appMode === 'game' && !isSubEvent && (
-                      <span className={`badge-stat badge-${event.type}`}>
-                        {getStatLabel(event.type)}
+                      {/* クオーター/練習バッジ */}
+                      <span style={{
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        background: appMode === 'practice' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(255, 107, 0, 0.1)',
+                        color: appMode === 'practice' ? 'var(--color-info)' : 'var(--accent-color)',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        border: '1px solid',
+                        borderColor: appMode === 'practice' ? 'rgba(59, 130, 246, 0.3)' : 'rgba(255, 107, 0, 0.2)'
+                      }}>
+                        {appMode === 'practice' ? '練習' : event.quarter}
                       </span>
-                    )}
 
-                    {/* 削除ボタン */}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onRemoveEvent(event.id); }}
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        color: '#666',
-                        cursor: 'pointer',
-                        padding: '2px'
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-danger)')}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
-                      title="削除"
-                    >
-                      <Trash2 size={13} />
-                    </button>
+                      {/* 試合時計の残り時間 */}
+                      {appMode !== 'practice' && event.gameTime !== undefined && (
+                        <span style={{ fontSize: '0.75rem', color: '#bbb', display: 'flex', alignItems: 'center', gap: '3px', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--glass-border)' }} title="残り試合時間">
+                          <Clock size={10} style={{ color: 'var(--accent-color)' }} />
+                          {formatTime(event.gameTime)}
+                        </span>
+                      )}
+
+                      {/* チーム表示 (試合モードのみ) */}
+                      {appMode === 'game' && (
+                        <span style={{
+                          fontSize: '0.7rem',
+                          fontWeight: 600,
+                          color: event.team === 'home' ? 'var(--accent-color)' : 'var(--color-danger)'
+                        }}>
+                          {event.team === 'home' ? '自チーム' : '相手チーム'}
+                        </span>
+                      )}
+
+                      {/* 選手番号と名前 (交代とタイムアウト以外) */}
+                      {appMode === 'game' && event.type !== 'TIMEOUT' && !isSubEvent && (
+                        <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>
+                          {player.number ? `#${player.number} ` : ''}{player.name}
+                        </span>
+                      )}
+                      
+                      {/* 交代表示 */}
+                      {appMode === 'game' && isSubEvent && (
+                        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#ccc', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <RefreshCw size={12} style={{ color: 'var(--accent-color)' }} /> {renderSubstitutionText(event)}
+                        </span>
+                      )}
+
+                      {/* タイムアウト表示 */}
+                      {appMode === 'game' && event.type === 'TIMEOUT' && (
+                        <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#ffeb3b' }}>
+                          タイムアウト
+                        </span>
+                      )}
+
+                      {/* 練習タグ名 */}
+                      {appMode === 'practice' && (
+                        <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-color)' }}>
+                          {event.practiceTag}
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      {/* スタッツアクションバッジ (試合モードかつ交代以外) */}
+                      {appMode === 'game' && !isSubEvent && (
+                        <span className={`badge-stat badge-${event.type}`}>
+                          {getStatLabel(event.type)}
+                        </span>
+                      )}
+
+                      {/* 削除ボタン */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onRemoveEvent(event.id); }}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#666',
+                          cursor: 'pointer',
+                          padding: '2px'
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-danger)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
+                        title="削除"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
+
+
 
                 {/* ログ二行目: メモ欄 */}
                 <div style={{ paddingLeft: '2px' }}>

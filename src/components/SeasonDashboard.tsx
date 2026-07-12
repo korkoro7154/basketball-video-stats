@@ -378,8 +378,142 @@ export const SeasonDashboard: React.FC<SeasonDashboardProps> = ({ isOffline = fa
   const shotsTotal = displayShots.length;
   const shotPercent = shotsTotal > 0 ? ((shotsMade / shotsTotal) * 100).toFixed(1) : '0.0';
 
+  // チームサマリー算出
+  const totalGames = gameResults.length;
+  const wins = gameResults.filter(r => r.result === 'W').length;
+  const losses = gameResults.filter(r => r.result === 'L').length;
+  const winRate = totalGames > 0 ? ((wins / totalGames) * 100).toFixed(1) : '0.0';
+  
+  const avgPts = totalGames > 0 ? (gameResults.reduce((sum, r) => sum + r.teamScore, 0) / totalGames).toFixed(1) : '0.0';
+  const avgOppPts = totalGames > 0 ? (gameResults.reduce((sum, r) => sum + r.oppScore, 0) / totalGames).toFixed(1) : '0.0';
+
+  // 自チームプレイヤーのスタッツリーダー抽出 (GP >= 1)
+  const homePlayerStats = playerStats.filter(p => p.team === 'home' && p.gp > 0);
+  
+  // 得点リーダー (平均得点高い順)
+  const ptsLeaders = [...homePlayerStats]
+    .sort((a, b) => (b.pts / b.gp) - (a.pts / a.gp))
+    .slice(0, 3);
+  
+  // アシストリーダー (平均アシスト高い順)
+  const astLeaders = [...homePlayerStats]
+    .sort((a, b) => (b.ast / b.gp) - (a.ast / a.gp))
+    .slice(0, 3);
+  
+  // リバウンドリーダー (平均リバウンド高い順)
+  const rebLeaders = [...homePlayerStats]
+    .sort((a, b) => (b.reb / b.gp) - (a.reb / a.gp))
+    .slice(0, 3);
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: '16px', width: '100%', boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', width: '100%', boxSizing: 'border-box' }}>
+      
+      {/* 1. シーズン概要・スタッツサマリー */}
+      {games.length > 0 && !loading && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', width: '100%' }}>
+          
+          {/* KPIサマリー */}
+          <div className="glass-card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px', borderLeft: '4px solid var(--accent-color)' }}>
+            <span style={{ fontSize: '0.75rem', color: '#888', fontWeight: 600 }}>通算チーム戦績</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+              <span style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>
+                {wins}勝 <span style={{ color: '#555', fontSize: '1.2rem' }}>/</span> {losses}敗
+              </span>
+              <span style={{ fontSize: '0.85rem', color: 'var(--accent-color)', fontWeight: 700 }}>
+                勝率 {winRate}%
+              </span>
+            </div>
+            <span style={{ fontSize: '0.7rem', color: '#666' }}>
+              全 {totalGames} 試合を集計中 (自チーム得点基準)
+            </span>
+          </div>
+
+          <div className="glass-card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px', borderLeft: '4px solid var(--color-info)' }}>
+            <span style={{ fontSize: '0.75rem', color: '#888', fontWeight: 600 }}>平均得点 / 平均失点</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+              <span style={{ fontSize: '1.8rem', fontWeight: 800, color: '#fff' }}>
+                {avgPts} <span style={{ color: '#555', fontSize: '1.2rem' }}>-</span> {avgOppPts}
+              </span>
+            </div>
+            <span style={{ fontSize: '0.7rem', color: '#666' }}>
+              1試合あたりの平均的な得点力と失点力
+            </span>
+          </div>
+
+          {/* 得点リーダーTOP3 */}
+          <div className="glass-card" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '4px' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--accent-color)', fontWeight: 700 }}>🔥 得点リーダー (PPG)</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {ptsLeaders.length === 0 ? (
+                <span style={{ fontSize: '0.75rem', color: '#555' }}>データなし</span>
+              ) : (
+                ptsLeaders.map((p, idx) => (
+                  <div key={p.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem' }}>
+                    <span style={{ fontWeight: 600, color: idx === 0 ? '#fff' : '#ccc' }}>
+                      {idx === 0 && '👑 '}{idx + 1}. #{p.number} {p.name.split(' ')[0]}
+                    </span>
+                    <span style={{ color: 'var(--accent-color)', fontWeight: 700 }}>
+                      {(p.pts / p.gp).toFixed(1)} <span style={{ fontSize: '0.65rem', color: '#666', fontWeight: 500 }}>点</span>
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* アシストリーダーTOP3 */}
+          <div className="glass-card" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '4px' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--color-info)', fontWeight: 700 }}>🪄 アシストリーダー (APG)</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {astLeaders.length === 0 ? (
+                <span style={{ fontSize: '0.75rem', color: '#555' }}>データなし</span>
+              ) : (
+                astLeaders.map((p, idx) => (
+                  <div key={p.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem' }}>
+                    <span style={{ fontWeight: 600, color: idx === 0 ? '#fff' : '#ccc' }}>
+                      {idx === 0 && '👑 '}{idx + 1}. #{p.number} {p.name.split(' ')[0]}
+                    </span>
+                    <span style={{ color: 'var(--color-info)', fontWeight: 700 }}>
+                      {(p.ast / p.gp).toFixed(1)} <span style={{ fontSize: '0.65rem', color: '#666', fontWeight: 500 }}>アシ</span>
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* リバウンドリーダーTOP3 */}
+          <div className="glass-card" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '4px' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--color-success)', fontWeight: 700 }}>🛡 リバウンドリーダー (RPG)</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {rebLeaders.length === 0 ? (
+                <span style={{ fontSize: '0.75rem', color: '#555' }}>データなし</span>
+              ) : (
+                rebLeaders.map((p, idx) => (
+                  <div key={p.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem' }}>
+                    <span style={{ fontWeight: 600, color: idx === 0 ? '#fff' : '#ccc' }}>
+                      {idx === 0 && '👑 '}{idx + 1}. #{p.number} {p.name.split(' ')[0]}
+                    </span>
+                    <span style={{ color: 'var(--color-success)', fontWeight: 700 }}>
+                      {(p.reb / p.gp).toFixed(1)} <span style={{ fontSize: '0.65rem', color: '#666', fontWeight: 500 }}>リバ</span>
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+        </div>
+      )}
+
+      {/* 2. メインのグリッド (2カラム) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: '16px', width: '100%', boxSizing: 'border-box' }}>
       
       {/* 左側: 選手通算成績テーブル */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -456,7 +590,7 @@ export const SeasonDashboard: React.FC<SeasonDashboardProps> = ({ isOffline = fa
             </div>
           ) : (
             <div style={{ overflowX: 'auto', width: '100%' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem', textAlign: 'left' }}>
+              <table className="table-zebra" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem', textAlign: 'left' }}>
                 <thead>
                   <tr style={{ borderBottom: '2px solid var(--glass-border)', color: '#aaa', fontWeight: 600 }}>
                     <th style={{ padding: '10px 8px' }}>選手</th>
@@ -558,34 +692,14 @@ export const SeasonDashboard: React.FC<SeasonDashboardProps> = ({ isOffline = fa
               <span style={{ fontSize: '0.75rem', color: '#666', textAlign: 'center', padding: '20px 0' }}>集計データはありません</span>
             ) : (
               gameResults.map((r, idx) => (
-                <div key={idx} style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  background: 'rgba(255,255,255,0.01)',
-                  border: '1px solid var(--glass-border)',
-                  borderRadius: '6px',
-                  padding: '8px 10px',
-                  fontSize: '0.75rem'
-                }}>
+                <div key={idx} className="game-result-card">
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', textAlign: 'left' }}>
                     <span style={{ fontWeight: 700, color: '#fff' }}>{r.title}</span>
                     <span style={{ color: '#888', fontSize: '0.65rem' }}>{r.date} vs {r.opponent}</span>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ fontWeight: 800, fontSize: '0.8rem' }}>{r.teamScore} - {r.oppScore}</span>
-                    <span style={{
-                      display: 'inline-block',
-                      width: '18px',
-                      height: '18px',
-                      borderRadius: '4px',
-                      background: r.result === 'W' ? 'rgba(74, 222, 128, 0.15)' : r.result === 'L' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(255,255,255,0.1)',
-                      color: r.result === 'W' ? '#4ade80' : r.result === 'L' ? '#ef4444' : '#ccc',
-                      textAlign: 'center',
-                      lineHeight: '18px',
-                      fontWeight: 800,
-                      fontSize: '0.7rem'
-                    }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontWeight: 800, fontSize: '0.85rem', color: '#e8e8e8' }}>{r.teamScore} - {r.oppScore}</span>
+                    <span className={`result-badge result-badge-${r.result}`}>
                       {r.result}
                     </span>
                   </div>
@@ -632,22 +746,22 @@ export const SeasonDashboard: React.FC<SeasonDashboardProps> = ({ isOffline = fa
           </div>
 
           {/* チャート統計 */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#ccc', background: 'rgba(255,255,255,0.02)', padding: '6px 10px', borderRadius: '4px' }}>
-            <span>試投数: <strong>{shotsTotal}</strong></span>
-            <span>成功率: <strong>{shotPercent}%</strong> ({shotsMade}成功)</span>
+          <div className="shot-stat-bar">
+            <span>試投数: <strong style={{ color: '#e8e8e8' }}>{shotsTotal}</strong></span>
+            <span>成功率: <strong style={{ color: 'var(--accent-color)', fontSize: '1.05em' }}>{shotPercent}%</strong> <span style={{ opacity: 0.7 }}>({shotsMade}成功)</span></span>
           </div>
 
           {/* コート描画 */}
-          <div style={{ border: '1px solid var(--glass-border)', borderRadius: 'var(--radius-md)', background: '#fff', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'center', margin: '4px 0' }}>
+          <div style={{ border: '1px solid var(--glass-border)', borderRadius: 'var(--radius-md)', background: '#161920', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'center', margin: '4px 0', boxShadow: 'inset 0 0 20px rgba(0,0,0,0.5)' }}>
             <svg viewBox="0 0 100 95" style={{ width: '100%', height: 'auto', display: 'block' }}>
-              <rect x="0" y="0" width="100" height="95" fill="#fff" stroke="#333" strokeWidth="0.8" />
-              <rect x="33.6" y="0" width="32.8" height="41.4" fill="none" stroke="#333" strokeWidth="0.8" />
-              <path d="M 33.6 41.4 A 16.4 16.4 0 0 0 66.4 41.4" fill="none" stroke="#333" strokeWidth="0.8" />
-              <path d="M 66.4 41.4 A 16.4 16.4 0 0 0 33.6 41.4" fill="none" stroke="#333" strokeWidth="0.8" strokeDasharray="1,1" />
-              <path d="M 6 0 L 6 21.3 A 44 48.2 0 0 0 94 21.3 L 94 0" fill="none" stroke="#333" strokeWidth="0.8" />
-              <path d="M 38 95 A 12 12 0 0 1 62 95" fill="none" stroke="#333" strokeWidth="0.8" />
-              <line x1="44" y1="8.6" x2="56" y2="8.6" stroke="#333" strokeWidth="1.2" />
-              <circle cx="50" cy="11.25" r="2.25" fill="none" stroke="#333" strokeWidth="1.2" />
+              <rect x="0" y="0" width="100" height="95" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="0.8" />
+              <rect x="33.6" y="0" width="32.8" height="41.4" fill="rgba(255,107,0,0.03)" stroke="rgba(255,255,255,0.25)" strokeWidth="0.8" />
+              <path d="M 33.6 41.4 A 16.4 16.4 0 0 0 66.4 41.4" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="0.8" />
+              <path d="M 66.4 41.4 A 16.4 16.4 0 0 0 33.6 41.4" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="0.8" strokeDasharray="1,1" />
+              <path d="M 6 0 L 6 21.3 A 44 48.2 0 0 0 94 21.3 L 94 0" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="0.8" />
+              <path d="M 38 95 A 12 12 0 0 1 62 95" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="0.8" />
+              <line x1="44" y1="8.6" x2="56" y2="8.6" stroke="rgba(255,255,255,0.35)" strokeWidth="1.2" />
+              <circle cx="50" cy="11.25" r="2.25" fill="none" stroke="rgba(255,255,255,0.35)" strokeWidth="1.2" />
               
               {/* プロット */}
               {displayShots.map(s => {
@@ -673,5 +787,6 @@ export const SeasonDashboard: React.FC<SeasonDashboardProps> = ({ isOffline = fa
 
       </div>
     </div>
+  </div>
   );
 };

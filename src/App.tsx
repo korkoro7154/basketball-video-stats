@@ -318,18 +318,20 @@ export default function App() {
   const handleQuarterChange = (q: Quarter) => {
     // 【Safari/メモリ対策】切り替え前のクオーターの動画Blob URLを明示的に解放し、クリアする
     const oldVideo = quarterVideos[currentQuarter];
+    let isBlobReleased = false;
     if (oldVideo && oldVideo.videoUrl && oldVideo.videoUrl.startsWith('blob:')) {
       try {
         URL.revokeObjectURL(oldVideo.videoUrl);
       } catch (e) {
         console.error('Failed to revoke Blob URL on quarter change:', e);
       }
+      
+      setQuarterVideos(prev => ({
+        ...prev,
+        [currentQuarter]: { videoUrl: null, videoName: '' } // Blobの場合のみ消去
+      }));
+      isBlobReleased = true;
     }
-
-    setQuarterVideos(prev => ({
-      ...prev,
-      [currentQuarter]: { videoUrl: null, videoName: '' } // 以前のクオーターの動画データは消去
-    }));
 
     setCurrentQuarter(q);
     setSelectedPlayerId(null);
@@ -345,7 +347,11 @@ export default function App() {
       videoRef.current.currentTime = 0;
     }
     
-    addToast(`${q} に切り替えました（以前の動画メモリは解放されました）`, 'info');
+    if (isBlobReleased) {
+      addToast(`${q} に切り替えました（以前の動画メモリは解放されました）`, 'info');
+    } else {
+      addToast(`${q} に切り替えました`, 'info');
+    }
   };
 
   // ライブタイマー操作ハンドラー群
@@ -1255,20 +1261,20 @@ export default function App() {
                   </div>
                   
                   {appMode === 'game' ? (
-                    <ol style={{ paddingLeft: '20px', fontSize: '0.85rem', color: '#ccc', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      <li>上のエリアでクオーター（例: <strong>1Q</strong>）を選択し、その動画を読み込みます。各クオーターごとに別ファイルを指定できます。</li>
-                      <li>右側の選手登録を行い、「スタート5設定」でクオーター開始時の出場選手5人を選びます。</li>
-                      <li>動画を見ながら右下の入力ボタンまたはキーボードショートカットでスタッツを記録します。</li>
-                      <li>動画とは独立して動く<strong>右上のミニゲームクロック（タイマー）</strong>も活用し、実際の公式時間と合わせておけば、スタッツ履歴やCSVに公式残り秒数を自動で記録できます。</li>
-                      <li>タイムラインや成績表の数値をクリックしてリプレイ再生が可能です。</li>
-                    </ol>
+                    <ul className="step-list">
+                      <li className="step-list-item"><span className="step-badge">1</span><span>上のエリアでクオーター（例: <strong style={{ color: '#fff' }}>1Q</strong>）を選択し、その動画を読み込みます。各クオーターごとに別ファイルを指定できます。</span></li>
+                      <li className="step-list-item"><span className="step-badge">2</span><span>右側の選手登録を行い、「スタート5設定」でクオーター開始時の出場選手5人を選びます。</span></li>
+                      <li className="step-list-item"><span className="step-badge">3</span><span>動画を見ながら右下の入力ボタンまたはキーボードショートカットでスタッツを記録します。</span></li>
+                      <li className="step-list-item"><span className="step-badge">4</span><span><strong style={{ color: '#fff' }}>右上のミニゲームクロック（タイマー）</strong>も活用し、実際の公式時間と合わせておけば、スタッツ履歴やCSVに公式残り秒数を自動で記録できます。</span></li>
+                      <li className="step-list-item"><span className="step-badge">5</span><span>タイムラインや成績表の数値をクリックしてリプレイ再生が可能です。</span></li>
+                    </ul>
                   ) : (
-                    <ol style={{ paddingLeft: '20px', fontSize: '0.85rem', color: '#ccc', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      <li>上のエリアに、<strong>練習や自主トレの動画ファイル</strong>を読み込みます。</li>
-                      <li>右側の入力パネルから、分析したい練習メニューの<strong>「練習タグ」</strong>を作成・配置します。</li>
-                      <li>動画を再生し、該当する練習メニューが行われている秒数でタグボタンを押すか、<strong>数字ショートカットキー（1〜9）</strong>を押してシーンを記録します。</li>
-                      <li>記録後、下の<strong>「練習メニュー別クリップ集計」</strong>パネルにタグ一覧とカウントが表示され、クリックするとその練習シーンだけの動画ジャンプ・連続振り返りができます。</li>
-                    </ol>
+                    <ul className="step-list">
+                      <li className="step-list-item"><span className="step-badge">1</span><span>上のエリアに、<strong style={{ color: '#fff' }}>練習や自主トレの動画ファイル</strong>を読み込みます。</span></li>
+                      <li className="step-list-item"><span className="step-badge">2</span><span>右側の入力パネルから、分析したい練習メニューの<strong style={{ color: '#fff' }}>「練習タグ」</strong>を作成・配置します。</span></li>
+                      <li className="step-list-item"><span className="step-badge">3</span><span>動画を再生し、該当する練習メニューが行われている秒数でタグボタンを押すか、<strong style={{ color: '#fff' }}>数字ショートカットキー（1〜9）</strong>を押してシーンを記録します。</span></li>
+                      <li className="step-list-item"><span className="step-badge">4</span><span>記録後、下の<strong style={{ color: '#fff' }}>「練習メニュー別クリップ集計」</strong>パネルにタグ一覧とカウントが表示され、クリックするとその練習シーンだけの動画ジャンプ・連続振り返りができます。</span></li>
+                    </ul>
                   )}
                 </div>
               )}
@@ -1309,20 +1315,20 @@ export default function App() {
               {appMode !== 'live' && (
                 currentQuarter === 'TOTAL' ? (
                   <div style={{
-                    padding: '24px',
-                    borderRadius: '16px',
-                    background: 'rgba(255, 255, 255, 0.03)',
-                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    padding: '28px 24px',
+                    borderRadius: 'var(--radius-md)',
+                    background: 'radial-gradient(circle at 50% 0%, rgba(255, 107, 0, 0.08) 0%, rgba(18, 20, 28, 0.7) 100%)',
+                    border: '1px solid rgba(255, 107, 0, 0.2)',
                     backdropFilter: 'blur(12px)',
-                    color: 'rgba(255, 255, 255, 0.7)',
+                    color: 'rgba(255, 255, 255, 0.75)',
                     textAlign: 'center',
                     fontSize: '14px',
                     lineHeight: '1.6',
-                    boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.2)'
+                    boxShadow: '0 10px 40px rgba(0, 0, 0, 0.4), 0 0 20px rgba(255, 107, 0, 0.05) inset'
                   }}>
-                    <div style={{ fontSize: '24px', marginBottom: '12px' }}>📊</div>
-                    <div style={{ fontWeight: '600', color: '#fff', marginBottom: '8px' }}>試合合計（全Q）を表示中</div>
-                    <p style={{ margin: 0, fontSize: '13px' }}>
+                    <div style={{ fontSize: '32px', marginBottom: '12px' }}>📊</div>
+                    <div style={{ fontWeight: '700', color: 'var(--accent-color)', fontSize: '1.1rem', marginBottom: '8px' }}>試合合計（全Q）を表示中</div>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#ccc' }}>
                       スタッツを記録または選手交代を行うには、上のクオーター選択タブから「1Q〜OT」のいずれかを選択してください。
                     </p>
                   </div>
@@ -1359,7 +1365,7 @@ export default function App() {
                 onRemoveEvent={handleRemoveEvent}
                 onUpdateEventNotes={handleUpdateEventNotes}
                 onJumpToTime={handleJumpToTime}
-                appMode={appMode === 'live' ? 'game' : appMode} // ライブモード時も試合ログ形式で表示
+                appMode={appMode}
               />
             </div>
           </>

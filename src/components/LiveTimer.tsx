@@ -125,7 +125,7 @@ export const LiveTimer: React.FC<LiveTimerProps> = ({
           {/* 自チームスコア */}
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <span style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--accent-color)' }}>自チーム</span>
-            <span style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--accent-color)', lineHeight: 1 }}>{homeScore}</span>
+            <span className="score-home-glow" style={{ fontSize: '2.2rem', fontWeight: 900, color: 'var(--accent-color)', lineHeight: 1, letterSpacing: '-1px' }}>{homeScore}</span>
           </div>
 
           {/* タイマー表示 */}
@@ -156,7 +156,7 @@ export const LiveTimer: React.FC<LiveTimerProps> = ({
             <span style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--color-danger)', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {opponentName || '相手チーム'}
             </span>
-            <span style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--color-danger)', lineHeight: 1 }}>{awayScore}</span>
+            <span className="score-away-glow" style={{ fontSize: '2.2rem', fontWeight: 900, color: 'var(--color-danger)', lineHeight: 1, letterSpacing: '-1px' }}>{awayScore}</span>
           </div>
         </div>
 
@@ -257,10 +257,12 @@ export const LiveTimer: React.FC<LiveTimerProps> = ({
             <Shield size={16} />
             <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#aaa' }}>自チーム</span>
           </div>
-          <span style={{ fontSize: '3rem', fontWeight: 800, color: 'var(--accent-color)', lineHeight: 1 }}>{homeScore}</span>
+          <span className="score-home-glow" style={{ fontSize: '4.5rem', fontWeight: 900, color: 'var(--accent-color)', lineHeight: 1, letterSpacing: '-2px' }}>{homeScore}</span>
         </div>
 
-        <span style={{ fontSize: '1.5rem', fontWeight: 800, color: '#444' }}>VS</span>
+        <div className="vs-divider">
+          <span style={{ fontSize: '1.1rem', fontWeight: 800, color: '#555', letterSpacing: '2px' }}>VS</span>
+        </div>
 
         {/* 相手チームスコア */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
@@ -268,7 +270,7 @@ export const LiveTimer: React.FC<LiveTimerProps> = ({
             <ShieldAlert size={16} />
             <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#aaa' }}>{opponentName || '相手チーム'}</span>
           </div>
-          <span style={{ fontSize: '3rem', fontWeight: 800, color: 'var(--color-danger)', lineHeight: 1 }}>{awayScore}</span>
+          <span className="score-away-glow" style={{ fontSize: '4.5rem', fontWeight: 900, color: 'var(--color-danger)', lineHeight: 1, letterSpacing: '-2px' }}>{awayScore}</span>
         </div>
       </div>
 

@@ -196,11 +196,12 @@ button, input, select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--glass-border);
-  background: rgba(10, 11, 14, 0.8);
-  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255, 107, 0, 0.25);
+  background: rgba(10, 11, 14, 0.9);
+  backdrop-filter: blur(16px);
   z-index: 100;
   flex-shrink: 0;
+  box-shadow: 0 1px 0 rgba(255, 107, 0, 0.1), 0 4px 20px rgba(0, 0, 0, 0.4);
 }
 
 .logo {
@@ -227,14 +228,14 @@ button, input, select {
   width: 100%;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: 1fr 390px;
+  grid-template-columns: minmax(0, 1fr) 390px;
   gap: 16px;
   box-sizing: border-box;
 }
 
 @media (max-width: 1200px) and (min-width: 901px) {
   .main-content {
-    grid-template-columns: 1fr 340px;
+    grid-template-columns: minmax(0, 1fr) 340px;
     padding: 12px 16px 16px 16px;
   }
 }
@@ -295,6 +296,11 @@ button, input, select {
 
 .pulse-orange {
   animation: pulse-glow 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px rgba(74, 222, 128, 0.8); }
+  50% { opacity: 0.5; box-shadow: 0 0 2px rgba(74, 222, 128, 0.3); }
 }
 
 @keyframes slide-in-up {
@@ -480,3 +486,332 @@ button, input, select {
   }
 }
 
+/* Video Dropzone Premium Styles */
+.video-dropzone {
+  height: 420px;
+  border: 2px dashed var(--glass-border);
+  border-radius: var(--radius-md);
+  background: radial-gradient(circle at 50% 50%, rgba(26, 29, 41, 0.4) 0%, rgba(10, 11, 14, 0.8) 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Subtle basketball court pattern inside dropzone */
+.video-dropzone::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-image: 
+    radial-gradient(circle at 50% 100%, transparent 60%, rgba(255, 255, 255, 0.02) 61%, rgba(255, 255, 255, 0.02) 63%, transparent 64%),
+    linear-gradient(90deg, transparent 49%, rgba(255, 255, 255, 0.015) 50%, transparent 51%);
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+.video-dropzone:hover {
+  border-color: rgba(255, 107, 0, 0.4);
+  background: radial-gradient(circle at 50% 50%, rgba(255, 107, 0, 0.03) 0%, rgba(10, 11, 14, 0.8) 100%);
+  box-shadow: 0 0 20px rgba(255, 107, 0, 0.05) inset;
+  transform: translateY(-2px);
+}
+
+.video-dropzone.drag-over {
+  border-color: var(--accent-color);
+  background: radial-gradient(circle at 50% 50%, rgba(255, 107, 0, 0.1) 0%, rgba(10, 11, 14, 0.9) 100%);
+  box-shadow: 0 0 30px rgba(255, 107, 0, 0.15) inset, 0 8px 24px rgba(255, 107, 0, 0.1);
+}
+
+.video-dropzone.disabled {
+  cursor: default;
+  border-color: rgba(255, 255, 255, 0.03);
+  background: rgba(10, 11, 14, 0.6);
+  pointer-events: none;
+}
+.video-dropzone.disabled::before {
+  opacity: 0.2;
+}
+
+/* Stats Input Button Premium Hover Styles */
+.stat-btn {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all var(--transition-fast);
+}
+
+.stat-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+  filter: brightness(1.15);
+}
+
+.stat-btn:active {
+  transform: translateY(0);
+  filter: brightness(0.95);
+}
+
+/* Stat button color categories */
+.stat-btn-success {
+  background: rgba(16, 185, 129, 0.1);
+  border-left-color: var(--color-success) !important;
+  border-top: 1px solid rgba(16, 185, 129, 0.15);
+  border-right: 1px solid rgba(16, 185, 129, 0.08);
+  border-bottom: 1px solid rgba(16, 185, 129, 0.08);
+}
+
+.stat-btn-success:hover {
+  background: rgba(16, 185, 129, 0.18);
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.15);
+}
+
+.stat-btn-danger {
+  background: rgba(239, 68, 68, 0.08);
+  border-left-color: var(--color-danger) !important;
+  border-top: 1px solid rgba(239, 68, 68, 0.12);
+  border-right: 1px solid rgba(239, 68, 68, 0.06);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.06);
+}
+
+.stat-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+  box-shadow: 0 6px 18px rgba(239, 68, 68, 0.12);
+}
+
+.stat-btn-info {
+  background: rgba(59, 130, 246, 0.08);
+  border-left-color: var(--color-info) !important;
+  border-top: 1px solid rgba(59, 130, 246, 0.12);
+  border-right: 1px solid rgba(59, 130, 246, 0.06);
+  border-bottom: 1px solid rgba(59, 130, 246, 0.06);
+}
+
+.stat-btn-info:hover {
+  background: rgba(59, 130, 246, 0.15);
+  box-shadow: 0 6px 18px rgba(59, 130, 246, 0.12);
+}
+
+.stat-btn-purple {
+  background: rgba(139, 92, 246, 0.08);
+  border-left-color: var(--color-purple) !important;
+  border-top: 1px solid rgba(139, 92, 246, 0.12);
+  border-right: 1px solid rgba(139, 92, 246, 0.06);
+  border-bottom: 1px solid rgba(139, 92, 246, 0.06);
+}
+
+.stat-btn-purple:hover {
+  background: rgba(139, 92, 246, 0.15);
+  box-shadow: 0 6px 18px rgba(139, 92, 246, 0.12);
+}
+
+.stat-btn-warning {
+  background: rgba(245, 158, 11, 0.08);
+  border-left-color: var(--color-warning) !important;
+  border-top: 1px solid rgba(245, 158, 11, 0.12);
+  border-right: 1px solid rgba(245, 158, 11, 0.06);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.06);
+}
+
+.stat-btn-warning:hover {
+  background: rgba(245, 158, 11, 0.15);
+  box-shadow: 0 6px 18px rgba(245, 158, 11, 0.12);
+}
+
+/* Quarter tab active glow */
+.quarter-tab-active {
+  box-shadow: 0 0 12px rgba(255, 107, 0, 0.4), 0 2px 8px rgba(255, 107, 0, 0.2) !important;
+}
+
+/* Live scoreboard score glow */
+.score-home-glow {
+  text-shadow: 0 0 30px rgba(255, 107, 0, 0.5), 0 0 60px rgba(255, 107, 0, 0.2);
+}
+
+.score-away-glow {
+  text-shadow: 0 0 30px rgba(239, 68, 68, 0.5), 0 0 60px rgba(239, 68, 68, 0.2);
+}
+
+/* VS divider */
+.vs-divider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.vs-divider::before,
+.vs-divider::after {
+  content: '';
+  width: 1px;
+  height: 24px;
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.15));
+}
+
+.vs-divider::after {
+  background: linear-gradient(to top, transparent, rgba(255, 255, 255, 0.15));
+}
+
+/* Empty state illustration */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 20px;
+  color: #555;
+}
+
+.empty-state-icon {
+  font-size: 3rem;
+  opacity: 0.3;
+  animation: float-gentle 3s ease-in-out infinite;
+}
+
+@keyframes float-gentle {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+.empty-state-text {
+  font-size: 0.9rem;
+  color: #555;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* KBD key badge */
+.key-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #999;
+  padding: 0 4px;
+}
+
+/* ======================================================== */
+/* Design Enhancement Styles                                */
+/* ======================================================== */
+
+/* Zebra stripe table rows */
+.table-zebra tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.025) !important;
+}
+
+.table-zebra tbody tr:hover {
+  background: rgba(255, 107, 0, 0.07) !important;
+  transition: background var(--transition-fast);
+}
+
+/* Season result badge W/L/D */
+.result-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  font-weight: 800;
+  font-size: 0.8rem;
+  padding: 0 6px;
+}
+
+.result-badge-W {
+  background: rgba(74, 222, 128, 0.2);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  box-shadow: 0 0 10px rgba(74, 222, 128, 0.2);
+}
+
+.result-badge-L {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.result-badge-D {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ccc;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+/* Step badge for usage guide */
+.step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-color), var(--accent-hover));
+  color: #fff;
+  font-weight: 800;
+  font-size: 0.72rem;
+  box-shadow: 0 0 10px var(--accent-glow);
+  flex-shrink: 0;
+}
+
+/* Game result card hover */
+.game-result-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.75rem;
+  transition: all var(--transition-fast);
+  cursor: default;
+}
+
+.game-result-card:hover {
+  border-color: rgba(255, 107, 0, 0.3);
+  background: rgba(255, 107, 0, 0.04);
+  transform: translateX(3px);
+}
+
+/* Shot stat bar */
+.shot-stat-bar {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: #ccc;
+  background: linear-gradient(90deg, rgba(255, 107, 0, 0.08) 0%, rgba(255, 255, 255, 0.02) 100%);
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 107, 0, 0.12);
+}
+
+/* Usage guide step list */
+.step-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.step-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: #ccc;
+  line-height: 1.5;
+}

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Player, StatsEvent, GameInfo, Quarter, QuarterVideo, ExportData } from '../types';
 import {
   generateCSV,
@@ -49,6 +49,19 @@ export const FileControls: React.FC<FileControlsProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isSaved, setIsSaved] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  // Escape キー押下でモーダルを閉じる
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 

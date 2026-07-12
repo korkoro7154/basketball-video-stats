@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Player, StatType } from '../types';
 import { getStatLabel, formatTime } from '../utils/statsHelper';
-import { Shield, ShieldAlert, Award, Keyboard, Plus, Trash2, Clock, X, Play, Pause, Minus, Settings } from 'lucide-react';
+import { Shield, ShieldAlert, Award, Keyboard, Plus, Trash2, Clock, X, Play, Pause, Minus, Settings, Mic, MicOff } from 'lucide-react';
 
 interface StatsControllerProps {
   players: Player[];
@@ -54,6 +54,170 @@ export const StatsController: React.FC<StatsControllerProps> = ({
   isLarge = false
 }) => {
   const [showShortcuts, setShowShortcuts] = useState(false);
+
+  // --- 音声入力用ステート & ロジック ---
+  const [isListening, setIsListening] = useState(false);
+  const [speechFeedback, setSpeechFeedback] = useState<string>('');
+  const [speechError, setSpeechError] = useState<string>('');
+  const [recognitionInstance, setRecognitionInstance] = useState<any>(null);
+
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    const rec = new SpeechRecognition();
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.lang = 'ja-JP';
+
+    rec.onstart = () => {
+      setIsListening(true);
+      setSpeechFeedback('音声アシスタント起動中...（例：「7番 アシスト」「相手 ターンオーバー」）');
+      setSpeechError('');
+    };
+
+    rec.onerror = (event: any) => {
+      console.error('Speech error:', event.error);
+      if (event.error === 'not-allowed') {
+        setSpeechError('マイクの使用許可が必要です。');
+      } else {
+        setSpeechError(`エラー: ${event.error}`);
+      }
+      setIsListening(false);
+    };
+
+    rec.onend = () => {
+      setIsListening(false);
+    };
+
+    rec.onresult = (event: any) => {
+      const resultIndex = event.resultIndex;
+      const transcript = event.results[resultIndex][0].transcript.trim().toLowerCase();
+      console.log('Recognized speech:', transcript);
+      setSpeechFeedback(`認識: 「${transcript}」`);
+      processSpeechCommand(transcript);
+    };
+
+    setRecognitionInstance(rec);
+
+    return () => {
+      try {
+        rec.abort();
+      } catch (e) {}
+    };
+  }, []);
+
+  const processSpeechCommand = (text: string) => {
+    // 1. チームの判別
+    let team: 'home' | 'away' = 'home';
+    if (text.includes('相手') || text.includes('あいて') || text.includes('敵') || text.includes('アウェイ') || text.includes('他')) {
+      team = 'away';
+    }
+
+    // 2. 選手の判別 (自チームのみ)
+    let matchedPlayer: Player | null = null;
+    if (team === 'home') {
+      // 背番号の数字をマッチング (例: 「7番」「7」「07」)
+      const numMatch = text.match(/(\d+)[\s　]*番?/);
+      if (numMatch) {
+        const numberStr = numMatch[1];
+        const normalizedNum = parseInt(numberStr).toString();
+        const p = players.find(x => x.team === 'home' && (x.number === numberStr || parseInt(x.number).toString() === normalizedNum));
+        if (p) {
+          matchedPlayer = p;
+        }
+      }
+
+      // 名前部分一致の確認 (番号で見つからなかった場合)
+      if (!matchedPlayer) {
+        for (const p of players) {
+          if (p.team === 'home' && p.name) {
+            const shortName = p.name.split(' ')[0].toLowerCase();
+            const fullName = p.name.replace(/\s+/g, '').toLowerCase();
+            const cleanText = text.replace(/\s+/g, '').toLowerCase();
+            if (cleanText.includes(fullName) || cleanText.includes(shortName)) {
+              matchedPlayer = p;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // 3. アクション（スタッツ）の判別
+    let actionType: StatType | null = null;
+    const cleanText = text.replace(/\s+/g, '');
+
+    // 得点・シュート
+    if (cleanText.includes('3p成功') || cleanText.includes('スリー成功') || cleanText.includes('3p得点') || cleanText.includes('3点成功') || cleanText.includes('スリーポイント成功') || cleanText.includes('3ポイント成功') || cleanText.includes('スリーイン')) {
+      actionType = '3P_MADE';
+    } else if (cleanText.includes('3p失敗') || cleanText.includes('スリー失敗') || cleanText.includes('3pミス') || cleanText.includes('スリーミス') || cleanText.includes('3ポイント失敗')) {
+      actionType = '3P_MISS';
+    } else if (cleanText.includes('2p成功') || cleanText.includes('シュート成功') || cleanText.includes('2p得点') || cleanText.includes('2点成功') || cleanText.includes('2点イン') || cleanText.includes('シュートイン') || cleanText.includes('得点')) {
+      actionType = '2P_MADE';
+    } else if (cleanText.includes('2p失敗') || cleanText.includes('シュート失敗') || cleanText.includes('2pミス') || cleanText.includes('2点失敗')) {
+      actionType = '2P_MISS';
+    } else if (cleanText.includes('フリースロー成功') || cleanText.includes('ft成功') || cleanText.includes('1点成功') || cleanText.includes('フリースローイン')) {
+      actionType = 'FT_MADE';
+    } else if (cleanText.includes('フリースロー失敗') || cleanText.includes('ft失敗') || cleanText.includes('ftミス')) {
+      actionType = 'FT_MISS';
+    } 
+    // アシスト
+    else if (cleanText.includes('アシスト') || cleanText.includes('パス')) {
+      actionType = 'AST';
+    } 
+    // リバウンド
+    else if (cleanText.includes('オフェンスリバウンド') || cleanText.includes('オフェンスリバ') || cleanText.includes('oリバ') || cleanText.includes('攻リバ')) {
+      actionType = 'OREB';
+    } else if (cleanText.includes('ディフェンスリバウンド') || cleanText.includes('ディフェンスリバ') || cleanText.includes('dリバ') || cleanText.includes('防リバ') || cleanText.includes('リバウンド')) {
+      actionType = cleanText.includes('オフェンス') ? 'OREB' : 'DREB';
+    } 
+    // その他スタッツ
+    else if (cleanText.includes('スチール') || cleanText.includes('スティール') || cleanText.includes('カット') || cleanText.includes('パスカット') || cleanText.includes('奪った')) {
+      actionType = 'STL';
+    } else if (cleanText.includes('ブロック') || cleanText.includes('はたき') || cleanText.includes('シュートブロック')) {
+      actionType = 'BLK';
+    } else if (cleanText.includes('ターンオーバー') || cleanText.includes('ミス') || cleanText.includes('to') || cleanText.includes('ト')) {
+      actionType = 'TO';
+    } else if (cleanText.includes('ファウル') || cleanText.includes('ファール')) {
+      actionType = 'PF';
+    }
+
+    if (actionType) {
+      const playerId = matchedPlayer ? matchedPlayer.id : null;
+      // Record stat directly
+      onRecordStat(actionType, team, playerId);
+      
+      const targetName = team === 'away' ? '相手チーム全体' : (matchedPlayer ? `#${matchedPlayer.number} ${matchedPlayer.name}` : '自チーム全体');
+      const actionLabel = getStatLabel(actionType);
+      
+      setSpeechFeedback(`【記録】${targetName} ➜ ${actionLabel}`);
+
+      // Clear feedback after 4 seconds
+      setTimeout(() => {
+        setSpeechFeedback(prev => prev.startsWith('【記録】') ? '' : prev);
+      }, 4000);
+    } else {
+      setSpeechFeedback(`一致するスタッツがありません: 「${text}」`);
+    }
+  };
+
+  const toggleListening = () => {
+    if (!recognitionInstance) {
+      alert('音声認識がサポートされていません。Google Chrome、Safari等のマイク対応ブラウザを使用してください。');
+      return;
+    }
+    if (isListening) {
+      recognitionInstance.stop();
+    } else {
+      try {
+        recognitionInstance.start();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  };
+
   const [showStart5Modal, setShowStart5Modal] = useState(false);
   const [tempStartingIds, setTempStartingIds] = useState<string[]>([]);
   const [newTagInput, setNewTagInput] = useState('');
@@ -176,21 +340,21 @@ export const StatsController: React.FC<StatsControllerProps> = ({
   const homePlayers = players.filter(p => p.team === 'home');
   const awayPlayers = players.filter(p => p.team === 'away');
 
-  const statButtons: { type: StatType | 'SUB'; color: string; key: string }[] = [
-    { type: '2P_MADE', color: 'var(--color-success)', key: '1' },
-    { type: '2P_MISS', color: 'var(--color-danger)', key: '2' },
-    { type: '3P_MADE', color: 'var(--color-success)', key: '3' },
-    { type: '3P_MISS', color: 'var(--color-danger)', key: '4' },
-    { type: 'FT_MADE', color: 'var(--color-success)', key: 'q' },
-    { type: 'FT_MISS', color: 'var(--color-danger)', key: 'w' },
-    { type: 'AST', color: 'var(--color-info)', key: 'a' },
-    { type: 'OREB', color: 'var(--color-info)', key: 'r' },
-    { type: 'DREB', color: 'var(--color-info)', key: 'd' },
-    { type: 'STL', color: 'var(--color-purple)', key: 's' },
-    { type: 'BLK', color: 'var(--color-purple)', key: 'b' },
-    { type: 'TO', color: 'var(--color-danger)', key: 't' },
-    { type: 'PF', color: 'var(--color-danger)', key: 'f' },
-    { type: 'SUB', color: 'var(--color-warning)', key: 'x' }
+  const statButtons: { type: StatType | 'SUB'; color: string; key: string; colorClass: string; icon: string }[] = [
+    { type: '2P_MADE', color: 'var(--color-success)', key: '1', colorClass: 'stat-btn-success', icon: '✓' },
+    { type: '2P_MISS', color: 'var(--color-danger)', key: '2', colorClass: 'stat-btn-danger', icon: '✗' },
+    { type: '3P_MADE', color: 'var(--color-success)', key: '3', colorClass: 'stat-btn-success', icon: '✓' },
+    { type: '3P_MISS', color: 'var(--color-danger)', key: '4', colorClass: 'stat-btn-danger', icon: '✗' },
+    { type: 'FT_MADE', color: 'var(--color-success)', key: 'q', colorClass: 'stat-btn-success', icon: '✓' },
+    { type: 'FT_MISS', color: 'var(--color-danger)', key: 'w', colorClass: 'stat-btn-danger', icon: '✗' },
+    { type: 'AST', color: 'var(--color-info)', key: 'a', colorClass: 'stat-btn-info', icon: '→' },
+    { type: 'OREB', color: 'var(--color-info)', key: 'r', colorClass: 'stat-btn-info', icon: '↑' },
+    { type: 'DREB', color: 'var(--color-info)', key: 'd', colorClass: 'stat-btn-info', icon: '↑' },
+    { type: 'STL', color: 'var(--color-purple)', key: 's', colorClass: 'stat-btn-purple', icon: '⚡' },
+    { type: 'BLK', color: 'var(--color-purple)', key: 'b', colorClass: 'stat-btn-purple', icon: '🛡' },
+    { type: 'TO', color: 'var(--color-danger)', key: 't', colorClass: 'stat-btn-danger', icon: '✗' },
+    { type: 'PF', color: 'var(--color-danger)', key: 'f', colorClass: 'stat-btn-danger', icon: '!' },
+    { type: 'SUB', color: 'var(--color-warning)', key: 'x', colorClass: 'stat-btn-warning', icon: '⇄' }
   ];
 
   const handleStart5Open = () => {
@@ -388,6 +552,69 @@ export const StatsController: React.FC<StatsControllerProps> = ({
           </button>
         </div>
       </div>
+
+      {/* 音声スタッツ入力アシスタント・コントロールパネル */}
+      {recognitionInstance && appMode !== 'practice' && (
+        <div 
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '6px 10px',
+            background: isListening ? 'rgba(239, 68, 68, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+            border: `1px solid ${isListening ? 'rgba(239, 68, 68, 0.25)' : 'var(--glass-border)'}`,
+            borderRadius: 'var(--radius-sm)',
+            marginTop: '6px',
+            boxShadow: isListening ? '0 0 10px rgba(239, 68, 68, 0.25)' : 'none',
+            transition: 'all var(--transition-fast)'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: 0 }}>
+            {isListening ? (
+              <Mic size={14} style={{ color: 'var(--color-danger)', flexShrink: 0 }} />
+            ) : (
+              <MicOff size={14} style={{ color: '#666', flexShrink: 0 }} />
+            )}
+            <span 
+              style={{ 
+                fontSize: '0.75rem', 
+                color: isListening ? '#ff8888' : '#888',
+                fontWeight: 600,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                flex: 1
+              }}
+              title={speechError || speechFeedback || '音声スタッツ入力はオフです'}
+            >
+              {speechError ? `⚠️ ${speechError}` : (isListening ? (speechFeedback || '音声聞き取り中...（例：「7番 アシスト」）') : '音声アシスタントは停止中')}
+            </span>
+            {(speechFeedback || speechError) && (
+              <button 
+                onClick={() => { setSpeechFeedback(''); setSpeechError(''); }}
+                style={{ background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', padding: '0 4px', display: 'flex', alignItems: 'center' }}
+              >
+                <X size={10} />
+              </button>
+            )}
+          </div>
+          <button
+            onClick={toggleListening}
+            className={`btn ${isListening ? 'btn-danger' : 'btn-secondary'}`}
+            style={{
+              padding: '4px 10px',
+              fontSize: '0.75rem',
+              fontWeight: 700,
+              borderRadius: '4px',
+              cursor: 'pointer',
+              flexShrink: 0,
+              marginLeft: '8px'
+            }}
+          >
+            {isListening ? '停止' : '有効化'}
+          </button>
+        </div>
+      )}
 
       {/* ショートカットヘルプ */}
       {showShortcuts && (
@@ -642,7 +869,7 @@ export const StatsController: React.FC<StatsControllerProps> = ({
               <span style={{ fontSize: isLarge ? '0.85rem' : '0.75rem', color: '#aaa', fontWeight: 500 }}>
                 🏃 コート上の選手:
               </span>
-              <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '4px' }}>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', paddingBottom: '4px' }}>
                 {onCourtPlayerIds.map(id => {
                   const player = players.find(p => p.id === id);
                   if (!player) return null;
@@ -691,7 +918,7 @@ export const StatsController: React.FC<StatsControllerProps> = ({
             <div style={{ 
               display: 'grid', 
               gridTemplateColumns: isLarge ? 'repeat(4, 1fr)' : 'repeat(2, 1fr)', 
-              gap: isLarge ? '8px' : '6px' 
+              gap: '8px' 
             }}>
               {statButtons.map((btn) => {
                 let displayLabel = btn.type === 'SUB' ? '選手交代' : getStatLabel(btn.type);
@@ -716,27 +943,21 @@ export const StatsController: React.FC<StatsControllerProps> = ({
                         handleTriggerAction(btn.type, activeTeam);
                       }
                     }}
-                    className="btn"
+                    className={`btn stat-btn ${btn.colorClass}`}
                     style={{
-                      background: 'rgba(255, 255, 255, 0.03)',
-                      border: '1px solid rgba(255, 255, 255, 0.08)',
                       borderLeft: `4px solid ${btn.color}`,
                       justifyContent: 'space-between',
-                      padding: isLarge ? '10px 14px' : '6px 8px',
+                      padding: isLarge ? '10px 14px' : '9px 12px',
                       borderRadius: 'var(--radius-sm)'
                     }}
                   >
-                    <span style={{ fontWeight: 600, fontSize: isLarge ? '0.95rem' : '0.75rem', color: '#fff' }}>{displayLabel}</span>
-                    <kbd style={{
-                      fontSize: isLarge ? '0.8rem' : '0.65rem',
-                      background: 'rgba(255,255,255,0.07)',
-                      padding: isLarge ? '2px 6px' : '1px 4px',
-                      borderRadius: '2px',
-                      color: '#aaa',
-                      fontWeight: 700
-                    }}>
+                    <span style={{ fontWeight: 600, fontSize: isLarge ? '0.95rem' : '0.82rem', color: '#fff', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <span style={{ fontSize: isLarge ? '0.85rem' : '0.75rem', opacity: 0.8 }}>{btn.icon}</span>
+                      {displayLabel}
+                    </span>
+                    <span className="key-badge">
                       {btn.key.toUpperCase()}
-                    </kbd>
+                    </span>
                   </button>
                 );
               })}
@@ -1293,7 +1514,7 @@ export const StatsController: React.FC<StatsControllerProps> = ({
           right: 0,
           bottom: 0,
           background: 'rgba(0,0,0,0.6)',
-          backdropFilter: 'blur(4px)',
+          backdropFilter: 'blur(8px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -1305,8 +1526,8 @@ export const StatsController: React.FC<StatsControllerProps> = ({
             display: 'flex',
             flexDirection: 'column',
             gap: '12px',
-            border: '1px solid var(--accent-color)',
-            boxShadow: '0 10px 40px rgba(0,0,0,0.6)'
+            border: '1px solid rgba(255, 107, 0, 0.3)',
+            boxShadow: '0 12px 40px rgba(0,0,0,0.5), 0 0 30px rgba(255, 107, 0, 0.15)'
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--glass-border)', paddingBottom: '8px' }}>
               <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--accent-color)' }}>

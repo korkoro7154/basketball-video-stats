@@ -460,11 +460,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               <button
                 key={q}
                 onClick={() => onQuarterChange(q)}
+                className={currentQuarter === q ? 'quarter-tab-active' : ''}
                 style={{
                   padding: '6px 14px',
                   background: currentQuarter === q ? 'var(--accent-color)' : 'rgba(255,255,255,0.02)',
                   borderColor: currentQuarter === q ? 'var(--accent-color)' : 'var(--glass-border)',
-                  color: '#fff',
+                  color: currentQuarter === q ? '#fff' : '#aaa',
                   border: '1px solid',
                   borderRadius: '6px',
                   fontSize: '0.75rem',
@@ -483,7 +484,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                     height: '6px',
                     borderRadius: '50%',
                     background: '#4ade80',
-                    display: 'inline-block'
+                    display: 'inline-block',
+                    boxShadow: '0 0 6px rgba(74, 222, 128, 0.8)',
+                    animation: 'pulse 2s ease-in-out infinite'
                   }} title="動画あり" />
                 )}
               </button>
@@ -564,20 +567,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           onDragLeave={currentQuarter === 'TOTAL' ? undefined : handleDragLeave}
           onDrop={currentQuarter === 'TOTAL' ? undefined : handleDrop}
           onClick={currentQuarter === 'TOTAL' ? undefined : () => fileInputRef.current?.click()}
-          style={{
-            height: '420px',
-            border: '2px dashed',
-            borderColor: dragOver ? 'var(--accent-color)' : 'var(--glass-border)',
-            borderRadius: 'var(--radius-md)',
-            background: dragOver ? 'rgba(255, 107, 0, 0.05)' : 'rgba(0, 0, 0, 0.2)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '16px',
-            cursor: currentQuarter === 'TOTAL' ? 'default' : 'pointer',
-            transition: 'all var(--transition-fast)'
-          }}
+          className={`video-dropzone ${dragOver ? 'drag-over' : ''} ${currentQuarter === 'TOTAL' ? 'disabled' : ''}`}
         >
           <UploadCloud size={48} style={{ color: dragOver ? 'var(--accent-color)' : '#666' }} />
           <div style={{ textAlign: 'center', padding: '0 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
@@ -589,11 +579,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   : `${currentQuarter}の動画ファイルをドラッグ＆ドロップ`}
             </p>
             
-            {currentQuarter !== 'TOTAL' && (
-              <p style={{ fontSize: '0.85rem', color: '#888' }}>
-                またはクリックしてファイルを選択
-              </p>
-            )}
 
             {/* YouTube URL 入力 */}
             {currentQuarter !== 'TOTAL' && (
@@ -685,7 +670,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               justifyContent: 'center',
               alignItems: 'center',
               width: '100%',
-              maxWidth: '570px',
+              maxWidth: '100%',
               aspectRatio: '16/9',
               margin: '0 auto'
             }}

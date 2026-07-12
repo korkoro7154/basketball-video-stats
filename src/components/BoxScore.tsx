@@ -759,19 +759,25 @@ ${events.map(e => {
           min-width: 800px;
         }
         .stats-table th {
-          background: rgba(255,255,255,0.03);
+          background: rgba(255,255,255,0.04);
           color: #888;
           font-weight: 600;
           padding: 8px 6px;
-          border-bottom: 1px solid var(--glass-border);
+          border-bottom: 2px solid rgba(255, 107, 0, 0.2);
           text-align: center;
+          white-space: nowrap;
         }
         .stats-table td {
           padding: 10px 6px;
           border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+          transition: all 0.15s;
         }
-        .stats-table tr:hover {
-          background: rgba(255, 255, 255, 0.01);
+        .stats-table tbody tr:nth-child(even) {
+          background: rgba(255, 255, 255, 0.02);
+        }
+        .stats-table tbody tr:hover {
+          background: rgba(255, 107, 0, 0.06) !important;
+          box-shadow: inset 2px 0 0 rgba(255, 107, 0, 0.4);
         }
         .hover-cell:hover {
           background: rgba(255, 107, 0, 0.12) !important;
