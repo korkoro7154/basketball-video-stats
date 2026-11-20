@@ -1,0 +1,31 @@
+services:
+  # 1. バックエンド API サーバー (Node.js/Express)
+  - type: web
+    name: basketball-stats-api
+    env: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 3001
+      - key: MONGODB_URI
+        sync: false # Renderのダッシュボード管理画面から MongoDB Atlas の接続キー (例: mongodb+srv://...) を設定してください
+
+  # 2. フロントエンド アプリケーション (React/Vite 静的サイト)
+  - type: web
+    name: basketball-stats-app
+    env: static
+    plan: free
+    buildCommand: npm install && npm run build
+    publishDir: dist
+    routes:
+      # /api/ 以下のアクセスをバックエンドのAPIサーバーへ転送 (プロキシ)
+      - type: rewrite
+        from: /api/*
+        to: https://basketball-stats-api.onrender.com/api/*
+      # React Router 用のリダイレクト設定 (SPA)
+      - type: rewrite
+        from: /*
+        to: /index.html

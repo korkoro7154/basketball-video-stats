@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from 'react';
 import type { StatsEvent, Player, Quarter, QuarterVideo } from '../types';
 import { formatTime, getStatLabel, calculateTeamStats } from '../utils/statsHelper';
-import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize, UploadCloud, FastForward, Edit3, ArrowUpRight, Slash, Eraser, Trash2, Undo2 } from 'lucide-react';
+import { Play, Pause, RotateCcw, Volume2, VolumeX, Maximize, UploadCloud, FastForward, Edit3, ArrowUpRight, Slash, Eraser, Trash2, Undo2, FolderOpen } from 'lucide-react';
 import { CoachingCanvas } from './CoachingCanvas';
 import ReactPlayer from 'react-player';
 import type { DrawShape } from './CoachingCanvas';
@@ -58,6 +58,163 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     : quarterVideos[currentQuarter]?.videoName || '';
   const [dragOver, setDragOver] = useState(false);
   const [youTubeInput, setYouTubeInput] = useState('');
+  
+  // --- Google Drive Picker API 認証・呼び出しロジック ---
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [isGapiLoaded, setIsGapiLoaded] = useState(false);
+  const [isGisLoaded, setIsGisLoaded] = useState(false);
+  const [isPickerInitializing, setIsPickerInitializing] = useState(false);
+  const [driveDownloadProgress, setDriveDownloadProgress] = useState<number | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
+
+  const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY || '';
+  const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+  const APP_ID = import.meta.env.VITE_GOOGLE_APP_ID || '';
+
+  useEffect(() => {
+    const checkAPIs = setInterval(() => {
+      if ((window as any).gapi) {
+        setIsGapiLoaded(true);
+      }
+      if ((window as any).google && (window as any).google.accounts && (window as any).google.accounts.oauth2) {
+        setIsGisLoaded(true);
+      }
+    }, 500);
+
+    return () => clearInterval(checkAPIs);
+  }, []);
+
+  useEffect(() => {
+    if (isGapiLoaded) {
+      (window as any).gapi.load('picker', () => {
+        console.log('Google Picker API loaded');
+      });
+    }
+  }, [isGapiLoaded]);
+
+  const handleOpenGooglePicker = () => {
+    if (!API_KEY || API_KEY === 'YOUR_GOOGLE_API_KEY' || !CLIENT_ID || CLIENT_ID === 'YOUR_GOOGLE_CLIENT_ID') {
+      alert('Google APIキーまたはクライアントIDが設定されていません。プロジェクトの「.env」ファイルに正しいキーを設定してください。');
+      return;
+    }
+
+    setIsPickerInitializing(true);
+
+    if (accessToken) {
+      createPicker(accessToken);
+    } else {
+      try {
+        const tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
+          client_id: CLIENT_ID,
+          scope: 'https://www.googleapis.com/auth/drive.readonly',
+          callback: (response: any) => {
+            if (response.error !== undefined) {
+              console.error('Google Auth Error:', response);
+              setIsPickerInitializing(false);
+              return;
+            }
+            const token = response.access_token;
+            setAccessToken(token);
+            createPicker(token);
+          },
+        });
+        tokenClient.requestAccessToken({ prompt: 'consent' });
+      } catch (e) {
+        console.error('Error during Google auth:', e);
+        alert('Google認証クライアントの初期化に失敗しました。');
+        setIsPickerInitializing(false);
+      }
+    }
+  };
+
+  const createPicker = (oauthToken: string) => {
+    try {
+      const google = (window as any).google;
+      const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+        .setMimeTypes('video/mp4,video/webm,video/ogg,video/quicktime,video/x-matroska')
+        .setSelectFolderEnabled(false);
+
+      const picker = new google.picker.PickerBuilder()
+        .enableFeature(google.picker.Feature.NAV_HIDDEN)
+        .setAppId(APP_ID)
+        .setOAuthToken(oauthToken)
+        .addView(view)
+        .setDeveloperKey(API_KEY)
+        .setCallback((data: any) => {
+          if (data.action === google.picker.Action.PICKED) {
+            const document = data.docs[0];
+            const fileId = document.id;
+            const fileName = document.name;
+            console.log('Selected Google Drive File:', fileId, fileName);
+
+            // CORSエラー回避のため、fetchでBlobとしてダウンロードしてからBlob URLを生成する
+            setIsPickerInitializing(false);
+            setDriveDownloadProgress(0);
+
+            // 既存のBlobURLを解放
+            if (blobUrlRef.current) {
+              URL.revokeObjectURL(blobUrlRef.current);
+              blobUrlRef.current = null;
+            }
+
+            const driveApiUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+
+            fetch(driveApiUrl, {
+              headers: { 'Authorization': `Bearer ${oauthToken}` },
+            })
+              .then(response => {
+                if (!response.ok) {
+                  throw new Error(`Google Drive APIエラー: ${response.status} ${response.statusText}`);
+                }
+                const contentLength = response.headers.get('Content-Length');
+                const total = contentLength ? parseInt(contentLength, 10) : 0;
+                let loaded = 0;
+                const reader = response.body!.getReader();
+                const chunks: Uint8Array[] = [];
+
+                const read = (): Promise<void> => {
+                  return reader.read().then(({ done, value }) => {
+                    if (done) return;
+                    chunks.push(value);
+                    loaded += value.length;
+                    if (total > 0) {
+                      setDriveDownloadProgress(Math.round((loaded / total) * 100));
+                    }
+                    return read();
+                  });
+                };
+
+                return read().then(() => {
+                  const blob = new Blob(chunks, { type: response.headers.get('Content-Type') || 'video/mp4' });
+                  return blob;
+                });
+              })
+              .then(blob => {
+                const blobUrl = URL.createObjectURL(blob);
+                blobUrlRef.current = blobUrl;
+                setDriveDownloadProgress(null);
+                onVideoUrlChange(blobUrl, `[GD] ${fileName}`);
+              })
+              .catch(err => {
+                console.error('Google Drive動画のダウンロードに失敗しました:', err);
+                alert(`Googleドライブからの動画ダウンロードに失敗しました。\n${err.message}`);
+                setDriveDownloadProgress(null);
+              });
+          }
+          if (data.action === google.picker.Action.CANCEL) {
+            setIsPickerInitializing(false);
+          }
+        })
+        .build();
+
+      picker.setVisible(true);
+    } catch (e) {
+      console.error('Error creating Picker:', e);
+      alert('Google Picker の起動に失敗しました。');
+      setIsPickerInitializing(false);
+    }
+  };
+
   const isYouTube = videoUrl && /(?:youtube\.com|youtu\.be)/i.test(videoUrl);
 
   // コーチング・ドローイング用の状態
@@ -406,6 +563,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           // ignore
         }
       }
+      // 生成したBlobURLを解放してメモリリークを防ぐ
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
     };
   }, [videoRef]);
 
@@ -580,7 +742,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             </p>
             
 
-            {/* YouTube URL 入力 */}
+            {/* Google Drive から選択 & YouTube URL 入力 */}
             {currentQuarter !== 'TOTAL' && (
               <div 
                 onClick={(e) => e.stopPropagation()}
@@ -596,6 +758,35 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   pointerEvents: 'auto'
                 }}
               >
+                {/* Google Picker 起動ボタン */}
+                <button
+                  onClick={handleOpenGooglePicker}
+                  disabled={isPickerInitializing}
+                  className="btn"
+                  style={{
+                    width: '100%',
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid var(--glass-border)',
+                    color: '#fff',
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    cursor: isPickerInitializing ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <FolderOpen size={16} style={{ color: 'var(--color-info)' }} />
+                  {isPickerInitializing ? 'Googleドライブ連携中...' : 'Googleドライブから動画を選択'}
+                </button>
+
+                <div style={{ fontSize: '0.75rem', color: '#666', margin: '4px 0' }}>ー または ー</div>
+
                 <input
                   type="text"
                   placeholder="または YouTube URL を入力"
@@ -675,6 +866,35 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               margin: '0 auto'
             }}
           >
+            {/* Googleドライブ動画ダウンロード中プログレスオーバーレイ */}
+            {driveDownloadProgress !== null && (
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(0,0,0,0.85)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 20,
+                gap: '16px',
+                borderRadius: 'var(--radius-md)',
+              }}>
+                <div style={{ fontSize: '2rem' }}>☁️</div>
+                <p style={{ color: '#fff', fontSize: '0.95rem', margin: 0 }}>
+                  Googleドライブから動画をダウンロード中... {driveDownloadProgress}%
+                </p>
+                <div style={{ width: '60%', height: '8px', background: 'rgba(255,255,255,0.2)', borderRadius: '4px', overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${driveDownloadProgress}%`,
+                    background: 'linear-gradient(90deg, #4285f4, #34a853)',
+                    borderRadius: '4px',
+                    transition: 'width 0.3s ease',
+                  }} />
+                </div>
+              </div>
+            )}
             {isYouTube ? (
               <div 
                 style={{ 
@@ -935,11 +1155,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
             <div style={{ display: 'flex', gap: '8px' }}>
               <button
+                onClick={handleOpenGooglePicker}
+                disabled={isPickerInitializing}
+                className="btn btn-secondary"
+                style={{ padding: '8px 12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                title="Googleドライブから動画を変更します"
+              >
+                <FolderOpen size={13} style={{ color: 'var(--color-info)' }} />
+                {isPickerInitializing ? 'ロード中...' : 'ドライブから変更'}
+              </button>
+              <button
                 onClick={() => fileInputRef.current?.click()}
                 className="btn btn-secondary"
                 style={{ padding: '8px 12px', fontSize: '0.8rem' }}
               >
-                動画変更
+                ローカル動画変更
               </button>
               <button onClick={handleFullscreen} className="btn btn-icon" style={{ width: '34px', height: '34px' }} title="全画面表示">
                 <Maximize size={15} />
