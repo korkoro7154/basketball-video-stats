@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /portal/main {
+      allow read, write: if request.auth != null && (
+        request.auth.token.email.lower() == 'kokoronan7@gmail.com' ||
+        (exists(/databases/$(database)/documents/portal/main) &&
+          (request.auth.token.email.lower() in resource.data.allowedEmails ||
+           request.auth.token.email.lower() in resource.data.ownerEmails))
+      );
+    }
+  }
+}
