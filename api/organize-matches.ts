@@ -1,5 +1,3 @@
-import process from 'node:process';
-
 export interface OrganizeMatchesClipInput {
   id: string;
   label: string;
@@ -550,6 +548,13 @@ export async function handleOrganizeMatchesPayload(
   }
 }
 
+function getEnvVar(name: string): string {
+  const proc = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process;
+  return proc?.env?.[name] ?? '';
+}
+
 export async function POST(request: Request): Promise<Response> {
   let body: unknown;
   try {
@@ -565,8 +570,8 @@ export async function POST(request: Request): Promise<Response> {
     body,
     authHeader: request.headers.get('authorization'),
     env: {
-      geminiApiKey: process.env.GEMINI_API_KEY ?? '',
-      firebaseApiKey: process.env.VITE_FIREBASE_API_KEY ?? '',
+      geminiApiKey: getEnvVar('GEMINI_API_KEY'),
+      firebaseApiKey: getEnvVar('VITE_FIREBASE_API_KEY'),
     },
   });
 
