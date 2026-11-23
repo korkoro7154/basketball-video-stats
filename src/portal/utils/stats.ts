@@ -1,9 +1,14 @@
 import type {
+  GameMatch,
   GameRecord,
+  GameStatEvent,
   Player,
   PlayerBoxScoreEntry,
   StatActionType,
 } from '../types';
+import { getGameMatches, hasNonEmptyManualBox } from './matches';
+
+export { hasNonEmptyManualBox };
 
 export interface StatMetaItem {
   label: string;
@@ -83,81 +88,190 @@ function calcPercent(made: number, attempts: number): number {
   return Math.round((made / attempts) * 100);
 }
 
+export function applyEventToEntry(
+  entry: PlayerBoxScoreEntry,
+  type: StatActionType
+): void {
+  switch (type) {
+    case '2P_MADE':
+      entry.pts += 2;
+      entry.fgm += 1;
+      entry.fga += 1;
+      break;
+    case '2P_MISS':
+      entry.fga += 1;
+      break;
+    case '3P_MADE':
+      entry.pts += 3;
+      entry.fgm += 1;
+      entry.fga += 1;
+      entry.tpm += 1;
+      entry.tpa += 1;
+      break;
+    case '3P_MISS':
+      entry.fga += 1;
+      entry.tpa += 1;
+      break;
+    case 'FT_MADE':
+      entry.pts += 1;
+      entry.ftm += 1;
+      entry.fta += 1;
+      break;
+    case 'FT_MISS':
+      entry.fta += 1;
+      break;
+    case 'OREB':
+      entry.oreb += 1;
+      break;
+    case 'DREB':
+      entry.dreb += 1;
+      break;
+    case 'AST':
+      entry.ast += 1;
+      break;
+    case 'STL':
+      entry.stl += 1;
+      break;
+    case 'BLK':
+      entry.blk += 1;
+      break;
+    case 'TO':
+      entry.to += 1;
+      break;
+    case 'PF':
+      entry.pf += 1;
+      break;
+  }
+}
+
+function addBoxEntry(
+  target: PlayerBoxScoreEntry,
+  src: PlayerBoxScoreEntry
+): void {
+  target.pts += src.pts;
+  target.fgm += src.fgm;
+  target.fga += src.fga;
+  target.tpm += src.tpm;
+  target.tpa += src.tpa;
+  target.ftm += src.ftm;
+  target.fta += src.fta;
+  target.oreb += src.oreb;
+  target.dreb += src.dreb;
+  target.ast += src.ast;
+  target.stl += src.stl;
+  target.blk += src.blk;
+  target.to += src.to;
+  target.pf += src.pf;
+}
+
+/** Computes score and recorded status for a single match within a game day. */
+export function computeMatchSummary(match: GameMatch): {
+  homeScore: number;
+  awayScore: number;
+  hasStats: boolean;
+  isManual: boolean;
+  eventCount: number;
+} {
+  const hasManual = hasNonEmptyManualBox(match.manualBoxScore);
+
+  let homeScore = match.homeScore ?? 0;
+  let awayScore = match.awayScore ?? 0;
+
+  if (hasManual) {
+    const manualHomePts = Object.values(match.manualBoxScore ?? {}).reduce(
+      (sum, entry) => sum + entry.pts,
+      0
+    );
+    homeScore = manualHomePts > 0 ? manualHomePts : (match.homeScore ?? 0);
+    awayScore = match.awayScore ?? 0;
+  } else if (match.events.length > 0) {
+    let homePts = 0;
+    let awayPts = 0;
+    match.events.forEach((e) => {
+      const pts = STAT_META[e.type].points;
+      if (e.team === 'home') homePts += pts;
+      else awayPts += pts;
+    });
+    homeScore = homePts > 0 ? homePts : (match.homeScore ?? 0);
+    awayScore = awayPts > 0 ? awayPts : (match.awayScore ?? 0);
+  }
+
+  const hasStats =
+    hasManual ||
+    match.events.length > 0 ||
+    homeScore > 0 ||
+    awayScore > 0;
+
+  return {
+    homeScore,
+    awayScore,
+    hasStats,
+    isManual: hasManual,
+    eventCount: match.events.length,
+  };
+}
+
 export function computeGameBoxScore(
   game: GameRecord,
-  players: Player[]
-): { rows: PlayerBoxScoreRow[]; teamTotals: BoxScoreTotals; isManual: boolean } {
-  const hasManual =
-    Boolean(game.manualBoxScore) &&
-    Object.keys(game.manualBoxScore ?? {}).length > 0;
-
+  players: Player[],
+  matchId?: string | 'ALL'
+): {
+  rows: PlayerBoxScoreRow[];
+  teamTotals: BoxScoreTotals;
+  isManual: boolean;
+  hasStats: boolean;
+} {
   const entryMap = new Map<string, PlayerBoxScoreEntry>();
   players.forEach((p) => {
-    const manualEntry = hasManual ? game.manualBoxScore?.[p.id] : undefined;
-    entryMap.set(
-      p.id,
-      manualEntry ? { ...manualEntry, playerId: p.id } : createEmptyBoxScoreEntry(p.id)
-    );
+    entryMap.set(p.id, createEmptyBoxScoreEntry(p.id));
   });
 
-  if (!hasManual) {
-    game.events
+  const addEventsToMap = (events: GameStatEvent[]) => {
+    events
       .filter((e) => e.team === 'home' && e.playerId)
       .forEach((e) => {
         const current = entryMap.get(e.playerId!);
-        if (!current) return;
-
-        switch (e.type) {
-          case '2P_MADE':
-            current.pts += 2;
-            current.fgm += 1;
-            current.fga += 1;
-            break;
-          case '2P_MISS':
-            current.fga += 1;
-            break;
-          case '3P_MADE':
-            current.pts += 3;
-            current.fgm += 1;
-            current.fga += 1;
-            current.tpm += 1;
-            current.tpa += 1;
-            break;
-          case '3P_MISS':
-            current.fga += 1;
-            current.tpa += 1;
-            break;
-          case 'FT_MADE':
-            current.pts += 1;
-            current.ftm += 1;
-            current.fta += 1;
-            break;
-          case 'FT_MISS':
-            current.fta += 1;
-            break;
-          case 'OREB':
-            current.oreb += 1;
-            break;
-          case 'DREB':
-            current.dreb += 1;
-            break;
-          case 'AST':
-            current.ast += 1;
-            break;
-          case 'STL':
-            current.stl += 1;
-            break;
-          case 'BLK':
-            current.blk += 1;
-            break;
-          case 'TO':
-            current.to += 1;
-            break;
-          case 'PF':
-            current.pf += 1;
-            break;
-        }
+        if (current) applyEventToEntry(current, e.type);
       });
+  };
+
+  const addManualBoxToMap = (box?: Record<string, PlayerBoxScoreEntry>) => {
+    if (!box) return;
+    players.forEach((p) => {
+      const src = box[p.id];
+      const current = entryMap.get(p.id);
+      if (src && current) addBoxEntry(current, src);
+    });
+  };
+
+  const matches = getGameMatches(game);
+  let isManual = false;
+  let hasStats = false;
+
+  if (matchId && matchId !== 'ALL') {
+    const match = matches.find((m) => m.id === matchId);
+    if (match) {
+      const summary = computeMatchSummary(match);
+      isManual = summary.isManual;
+      hasStats = summary.hasStats;
+      if (summary.isManual) {
+        addManualBoxToMap(match.manualBoxScore);
+      } else {
+        addEventsToMap(match.events);
+      }
+    }
+  } else {
+    matches.forEach((match) => {
+      const summary = computeMatchSummary(match);
+      if (!summary.hasStats) return;
+      hasStats = true;
+      if (summary.isManual) {
+        addManualBoxToMap(match.manualBoxScore);
+      } else {
+        addEventsToMap(match.events);
+      }
+    });
+    isManual = hasStats && matches.every((m) => m.events.length === 0);
   }
 
   const rows: PlayerBoxScoreRow[] = [...players]
@@ -215,7 +329,8 @@ export function computeGameBoxScore(
 
   return {
     rows,
-    isManual: hasManual,
+    isManual,
+    hasStats,
     teamTotals: {
       ...totals,
       fgPercent: calcPercent(totals.fgm, totals.fga),
@@ -225,42 +340,79 @@ export function computeGameBoxScore(
   };
 }
 
-export function computeGameScores(game: GameRecord): {
+export function computeGameScores(
+  game: GameRecord,
+  matchId?: string | 'ALL'
+): {
   homeScore: number;
   awayScore: number;
+  hasStats: boolean;
+  recordedMatchCount: number;
+  totalMatchCount: number;
+  wins: number;
+  losses: number;
+  draws: number;
 } {
-  const hasManual =
-    Boolean(game.manualBoxScore) &&
-    Object.keys(game.manualBoxScore ?? {}).length > 0;
+  const matches = getGameMatches(game);
 
-  if (hasManual) {
-    const homeFromManual = Object.values(game.manualBoxScore ?? {}).reduce(
-      (sum, entry) => sum + entry.pts,
-      0
-    );
+  if (matchId && matchId !== 'ALL') {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) {
+      return {
+        homeScore: 0,
+        awayScore: 0,
+        hasStats: false,
+        recordedMatchCount: 0,
+        totalMatchCount: 0,
+        wins: 0,
+        losses: 0,
+        draws: 0,
+      };
+    }
+    const sum = computeMatchSummary(match);
+    const res = sum.hasStats
+      ? getGameResult(sum.homeScore, sum.awayScore)
+      : null;
     return {
-      homeScore: homeFromManual > 0 ? homeFromManual : game.homeScore,
-      awayScore: game.awayScore,
+      homeScore: sum.homeScore,
+      awayScore: sum.awayScore,
+      hasStats: sum.hasStats,
+      recordedMatchCount: sum.hasStats ? 1 : 0,
+      totalMatchCount: 1,
+      wins: res === 'W' ? 1 : 0,
+      losses: res === 'L' ? 1 : 0,
+      draws: res === 'D' ? 1 : 0,
     };
   }
 
-  if (game.events.length > 0) {
-    let homePts = 0;
-    let awayPts = 0;
-    game.events.forEach((e) => {
-      const pts = STAT_META[e.type].points;
-      if (e.team === 'home') homePts += pts;
-      else awayPts += pts;
-    });
-    return {
-      homeScore: homePts > 0 ? homePts : game.homeScore,
-      awayScore: awayPts > 0 ? awayPts : game.awayScore,
-    };
-  }
+  let homeScore = 0;
+  let awayScore = 0;
+  let recordedMatchCount = 0;
+  let wins = 0;
+  let losses = 0;
+  let draws = 0;
+
+  matches.forEach((m) => {
+    const sum = computeMatchSummary(m);
+    if (!sum.hasStats) return;
+    recordedMatchCount += 1;
+    homeScore += sum.homeScore;
+    awayScore += sum.awayScore;
+    const res = getGameResult(sum.homeScore, sum.awayScore);
+    if (res === 'W') wins += 1;
+    else if (res === 'L') losses += 1;
+    else draws += 1;
+  });
 
   return {
-    homeScore: game.homeScore,
-    awayScore: game.awayScore,
+    homeScore,
+    awayScore,
+    hasStats: recordedMatchCount > 0,
+    recordedMatchCount,
+    totalMatchCount: matches.length,
+    wins,
+    losses,
+    draws,
   };
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import {
   ClipboardEdit,
@@ -92,6 +92,7 @@ export function PortalApp() {
     'idle' | 'ready' | 'denied' | 'error'
   >('idle');
   const [cloudError, setCloudError] = useState('');
+  const latestDataRef = useRef<PortalData>(localData);
 
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState('');
@@ -149,6 +150,7 @@ export function PortalApp() {
 
     return subscribePortalData(email, {
       onData: (nextData) => {
+        latestDataRef.current = nextData;
         setCloudData(nextData);
         setCloudStatus('ready');
         setCloudError('');
@@ -174,20 +176,30 @@ export function PortalApp() {
   const currentUser = isFirebaseConfigured ? authState.user : demoUser;
   const data = isFirebaseConfigured ? (cloudData ?? localData) : localData;
 
-  const updateData = (updater: (prev: PortalData) => PortalData) => {
+  useEffect(() => {
+    latestDataRef.current = data;
+  }, [data]);
+
+  const updateData = async (
+    updater: (prev: PortalData) => PortalData
+  ): Promise<boolean> => {
+    const next = updater(latestDataRef.current);
+    latestDataRef.current = next;
+
     if (isFirebaseConfigured) {
-      setCloudData((prev) => {
-        const base = prev ?? localData;
-        const next = updater(base);
-        void savePortalDataToCloud(next).catch((err) => {
-          console.error('Cloud save error:', err);
-          notify('クラウドへの保存に失敗しました。通信状況をご確認ください。', 'danger');
-        });
-        return next;
-      });
-    } else {
-      setLocalData((prev) => updater(prev));
+      setCloudData(next);
+      try {
+        await savePortalDataToCloud(next);
+        return true;
+      } catch (err) {
+        console.error('Cloud save error:', err);
+        notify('クラウドへの保存に失敗しました。通信状況をご確認ください。', 'danger');
+        return false;
+      }
     }
+
+    setLocalData(next);
+    return true;
   };
 
   const handleGoogleSignIn = async () => {
@@ -253,7 +265,7 @@ export function PortalApp() {
       notify('有効なYouTube URLを確認してください', 'danger');
       return;
     }
-    updateData((prev) => ({
+    void updateData((prev) => ({
       ...prev,
       games: prev.games.map((g) => {
         if (g.id !== gameId) return g;
@@ -262,6 +274,12 @@ export function PortalApp() {
           videos: g.videos.map((v) =>
             v.id === clipId ? { ...v, youtubeId: videoId, youtubeUrl } : v
           ),
+          matches: g.matches?.map((m) => ({
+            ...m,
+            videos: m.videos.map((v) =>
+              v.id === clipId ? { ...v, youtubeId: videoId, youtubeUrl } : v
+            ),
+          })),
         };
       }),
     }));

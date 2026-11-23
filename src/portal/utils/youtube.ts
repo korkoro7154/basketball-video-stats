@@ -152,6 +152,15 @@ export function inferClipLabelFromTitle(
 ): string {
   const normalized = toHalfWidthDigits(title).trim();
 
+  const hasMatchIdentifier =
+    /(?:\d+\s*試合目|第\s*\d+\s*試合|game\s*\d+|[a-zA-Z]\s*\d+\s*試合)/i.test(
+      normalized
+    );
+  if (hasMatchIdentifier) {
+    const trimmed = title.trim();
+    return trimmed.length > 18 ? `${trimmed.slice(0, 18)}…` : trimmed;
+  }
+
   if (/(?:^|[^\d])1\s*(?:Q|クオーター|クォーター)/i.test(normalized) || /第\s*1\s*(?:Q|ピリオド)/i.test(normalized)) {
     return '1Q';
   }

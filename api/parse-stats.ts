@@ -1,0 +1,519 @@
+import process from 'node:process';
+
+export interface ParsedStatsPayloadInput {
+  body: unknown;
+  authHeader: string | null;
+  env: {
+    geminiApiKey: string;
+    firebaseApiKey: string;
+  };
+}
+
+export interface ParsedOcrPlayerPayload {
+  number: string;
+  name: string;
+  pts: number;
+  threePm: number;
+  threePa: number;
+  twoPm: number;
+  twoPa: number;
+  ftm: number;
+  fta: number;
+  oreb: number;
+  dreb: number;
+  ast: number;
+  stl: number;
+  blk: number;
+  to: number;
+  pf: number;
+}
+
+export interface ParsedStatsPayloadOutput {
+  imageType: 'box_score' | 'shot_chart' | 'team_summary' | 'unknown';
+  screenshotDate: string;
+  homeTeamName: string;
+  awayTeamName: string;
+  homeScore: number;
+  awayScore: number;
+  players: ParsedOcrPlayerPayload[];
+}
+
+const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const MAX_BASE64_LENGTH = 8 * 1024 * 1024;
+const GEMINI_MODELS = [
+  { name: 'gemini-3.8-flash', disableThinking: false, timeoutMs: 13_000 },
+  { name: 'gemini-3.1-flash-lite', disableThinking: true, timeoutMs: 12_000 },
+  { name: 'gemini-3.5-flash-lite', disableThinking: false, timeoutMs: 12_000 },
+  { name: 'gemini-3.5-flash', disableThinking: false, timeoutMs: 12_000 },
+  { name: 'gemini-3-flash-preview', disableThinking: true, timeoutMs: 12_000 },
+] as const;
+
+const modelCooldownUntil = new Map<string, number>();
+
+const RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    imageType: {
+      type: 'STRING',
+      enum: ['box_score', 'shot_chart', 'team_summary', 'unknown'],
+    },
+    screenshotDate: { type: 'STRING' },
+    homeTeamName: { type: 'STRING' },
+    awayTeamName: { type: 'STRING' },
+    homeScore: { type: 'INTEGER' },
+    awayScore: { type: 'INTEGER' },
+    players: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          number: { type: 'STRING' },
+          name: { type: 'STRING' },
+          pts: { type: 'INTEGER' },
+          threePm: { type: 'INTEGER' },
+          threePa: { type: 'INTEGER' },
+          twoPm: { type: 'INTEGER' },
+          twoPa: { type: 'INTEGER' },
+          ftm: { type: 'INTEGER' },
+          fta: { type: 'INTEGER' },
+          oreb: { type: 'INTEGER' },
+          dreb: { type: 'INTEGER' },
+          ast: { type: 'INTEGER' },
+          stl: { type: 'INTEGER' },
+          blk: { type: 'INTEGER' },
+          to: { type: 'INTEGER' },
+          pf: { type: 'INTEGER' },
+        },
+        required: [
+          'number',
+          'name',
+          'pts',
+          'threePm',
+          'threePa',
+          'twoPm',
+          'twoPa',
+          'ftm',
+          'fta',
+          'oreb',
+          'dreb',
+          'ast',
+          'stl',
+          'blk',
+          'to',
+          'pf',
+        ],
+      },
+    },
+  },
+  required: [
+    'imageType',
+    'screenshotDate',
+    'homeTeamName',
+    'awayTeamName',
+    'homeScore',
+    'awayScore',
+    'players',
+  ],
+};
+
+function toNonNegInt(value: unknown): number {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.round(num));
+}
+
+async function verifyFirebaseIdToken(
+  idToken: string,
+  firebaseApiKey: string
+): Promise<boolean> {
+  if (!idToken) return false;
+  try {
+    const res = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(
+        firebaseApiKey
+      )}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      }
+    );
+    if (!res.ok) return false;
+    const json = (await res.json()) as { users?: unknown[] };
+    return Array.isArray(json.users) && json.users.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function buildExtractionPrompt(teamNameHint: string): string {
+  const hintLine = teamNameHint
+    ? `Home team hint: "${teamNameHint}" (also commonly named "駒場高校男子バスケットボールチーム" or "駒場").`
+    : 'Home team is normally the top table (e.g. "駒場高校男子バスケットボールチーム").';
+
+  return [
+    'You are reading a Japanese high school basketball stats screenshot and converting it into structured JSON.',
+    hintLine,
+    '',
+    'First identify imageType:',
+    '- "box_score": A tabular player box score (e.g., titled "ボックススコア" with two stacked tables: top = home team, bottom = opponent).',
+    '- "shot_chart": A basketball court shot map ("シュートチャート"). Set players: [] and homeScore/awayScore: 0.',
+    '- "team_summary": A scoreboard or Team Box Score summary card without per-player rows. Extract homeTeamName, awayTeamName, homeScore, awayScore, and set players: [].',
+    '- "unknown": Any unrelated image.',
+    '',
+    'For "box_score" screenshots:',
+    '1. Extract ONLY the home team players (the top table / team matching the home hint) into players[]. Never include opponent players in players[].',
+    '2. Exact Easy Stats / BasketScore column order from left to right:',
+    '   No. | 選手名 | GS | PTS | 3P (M, A, %) | 2P (M, A, %) | DK | FT (M, A, %) | RBD (OR, DR, TOT) | AST | STL | BLK | TO | PF | TF | OF | FO | DFL | DQ | MIN',
+    '3. CRITICAL WARNING: The 3P group (M, A, %) comes BEFORE the 2P group (M, A, %). Do NOT swap 3P and 2P.',
+    '4. Ignore percentage columns (%), GS, DK, RBD TOT, TF, OF, FO, DFL, DQ, and MIN.',
+    '5. Check your numbers per player row: PTS must normally equal (twoPm * 2 + threePm * 3 + ftm).',
+    '6. Exclude "Team/Coaches" and "TOTALS" rows from players[], but read TOTALS.PTS from the top table as homeScore and TOTALS.PTS from the bottom opponent table as awayScore.',
+    '7. Record the bottom table title as awayTeamName.',
+    '8. Keep Japanese player names exactly as printed (preserving or normalizing spacing cleanly). Keep jersey number as printed string (e.g. "0", "2", "17").',
+    '9. Read screenshotDate as "MM-DD" from any visible date in the screenshot (e.g. iPad status bar "10月31日" -> "10-31"), or "" if none is visible.',
+  ].join('\n');
+}
+
+async function callGeminiVision(
+  geminiApiKey: string,
+  mimeType: string,
+  imageBase64: string,
+  teamNameHint: string
+): Promise<{ status: number; rawText?: string; errorMessage?: string }> {
+  const contents = [
+    {
+      role: 'user',
+      parts: [
+        { text: buildExtractionPrompt(teamNameHint) },
+        {
+          inlineData: {
+            mimeType,
+            data: imageBase64,
+          },
+        },
+      ],
+    },
+  ];
+
+  const now = Date.now();
+  const readyModels = GEMINI_MODELS.filter(
+    (m) => (modelCooldownUntil.get(m.name) ?? 0) <= now
+  );
+  const candidates = readyModels.length > 0 ? readyModels : [...GEMINI_MODELS];
+  const deadline = now + 28_000;
+
+  for (let i = 0; i < candidates.length; i += 1) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs < 3_000) {
+      return {
+        status: 504,
+        errorMessage: '読み取りがタイムアウトしました。もう一度お試しください。',
+      };
+    }
+
+    const modelCfg = candidates[i];
+    const model = modelCfg.name;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+    const payload = {
+      contents,
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: 'application/json',
+        responseSchema: RESPONSE_SCHEMA,
+        ...(modelCfg.disableThinking
+          ? { thinkingConfig: { thinkingBudget: 0 } }
+          : {}),
+      },
+    };
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': geminiApiKey,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(Math.min(modelCfg.timeoutMs, remainingMs)),
+      });
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('Gemini vision fetch error:', model, errMsg);
+      modelCooldownUntil.set(model, Date.now() + 30_000);
+      if (i < candidates.length - 1) {
+        continue;
+      }
+      return {
+        status: 504,
+        errorMessage: '読み取りがタイムアウトしました。もう一度お試しください。',
+      };
+    }
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      console.error('Gemini vision HTTP error:', model, res.status, errBody.slice(0, 300));
+      if (res.status === 429) {
+        const cooldownMs = errBody.toLowerCase().includes('per day')
+          ? 10 * 60_000
+          : 20_000;
+        modelCooldownUntil.set(model, Date.now() + cooldownMs);
+      } else if (res.status === 503) {
+        modelCooldownUntil.set(model, Date.now() + 20_000);
+      }
+
+      const canFallback =
+        res.status === 404 || res.status === 429 || res.status >= 500;
+      if (canFallback && i < candidates.length - 1) {
+        continue;
+      }
+      if (res.status === 400 || res.status === 401 || res.status === 403) {
+        return {
+          status: res.status,
+          errorMessage:
+            'Gemini APIキーが無効または制限されています。キー設定をご確認ください。',
+        };
+      }
+      if (res.status === 429) {
+        return {
+          status: 429,
+          errorMessage:
+            '読み取り回数の上限に達しました。少し時間をおいてからお試しください。',
+        };
+      }
+      return {
+        status: 502,
+        errorMessage: `スクショ解析サービスとの通信に失敗しました (HTTP ${res.status})。`,
+      };
+    }
+
+    const json = (await res.json()) as {
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string }> };
+      }>;
+    };
+    const text = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    return { status: 200, rawText: text };
+  }
+
+  return {
+    status: 502,
+    errorMessage: 'スクショ解析モデルを呼び出せませんでした。',
+  };
+}
+
+function normalizeScreenshotDate(raw: unknown): string {
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  const match = s.match(/(?:^|[-/.年\s])(\d{1,2})\s*(?:月|[-/.])\s*(\d{1,2})\s*日?/);
+  if (!match) return '';
+  const m = parseInt(match[1], 10);
+  const d = parseInt(match[2], 10);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return '';
+  return `${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+}
+
+function sanitizeParsedOutput(parsed: unknown): ParsedStatsPayloadOutput {
+  const rec =
+    typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : {};
+
+  const rawType = String(rec.imageType ?? 'unknown');
+  const imageType: ParsedStatsPayloadOutput['imageType'] =
+    rawType === 'box_score' ||
+    rawType === 'shot_chart' ||
+    rawType === 'team_summary'
+      ? rawType
+      : 'unknown';
+
+  const rawPlayers = Array.isArray(rec.players) ? rec.players : [];
+  const players: ParsedOcrPlayerPayload[] = [];
+
+  for (const item of rawPlayers) {
+    if (typeof item !== 'object' || item === null) continue;
+    const p = item as Record<string, unknown>;
+    const number = String(p.number ?? '').trim();
+    const name = String(p.name ?? '').trim();
+    const lowerName = name.toLowerCase();
+
+    if (
+      (!number && !name) ||
+      lowerName.includes('total') ||
+      lowerName.includes('team/coach')
+    ) {
+      continue;
+    }
+
+    const threePm = toNonNegInt(p.threePm);
+    const threePa = Math.max(threePm, toNonNegInt(p.threePa));
+    const twoPm = toNonNegInt(p.twoPm);
+    const twoPa = Math.max(twoPm, toNonNegInt(p.twoPa));
+    const ftm = toNonNegInt(p.ftm);
+    const fta = Math.max(ftm, toNonNegInt(p.fta));
+
+    players.push({
+      number,
+      name,
+      pts: toNonNegInt(p.pts),
+      threePm,
+      threePa,
+      twoPm,
+      twoPa,
+      ftm,
+      fta,
+      oreb: toNonNegInt(p.oreb),
+      dreb: toNonNegInt(p.dreb),
+      ast: toNonNegInt(p.ast),
+      stl: toNonNegInt(p.stl),
+      blk: toNonNegInt(p.blk),
+      to: toNonNegInt(p.to),
+      pf: toNonNegInt(p.pf),
+    });
+  }
+
+  return {
+    imageType,
+    screenshotDate: normalizeScreenshotDate(rec.screenshotDate),
+    homeTeamName: String(rec.homeTeamName ?? '').trim(),
+    awayTeamName: String(rec.awayTeamName ?? '').trim(),
+    homeScore: toNonNegInt(rec.homeScore),
+    awayScore: toNonNegInt(rec.awayScore),
+    players,
+  };
+}
+
+export async function handleParseStatsPayload(
+  input: ParsedStatsPayloadInput
+): Promise<{ status: number; data: Record<string, unknown> }> {
+  const geminiApiKey = input.env.geminiApiKey.trim();
+  if (!geminiApiKey) {
+    return {
+      status: 503,
+      data: {
+        error:
+          'スクショ読み取り用の Gemini APIキー（GEMINI_API_KEY）がまだ設定されていません。',
+      },
+    };
+  }
+
+  const firebaseApiKey = input.env.firebaseApiKey.trim();
+  if (firebaseApiKey) {
+    const authHeader = input.authHeader?.trim() ?? '';
+    const token = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+    const valid = await verifyFirebaseIdToken(token, firebaseApiKey);
+    if (!valid) {
+      return {
+        status: 401,
+        data: {
+          error: 'ログイン情報の確認に失敗しました。再ログインしてお試しください。',
+        },
+      };
+    }
+  }
+
+  if (typeof input.body !== 'object' || input.body === null) {
+    return {
+      status: 400,
+      data: { error: '画像データが正しく送信されませんでした。' },
+    };
+  }
+
+  const bodyRec = input.body as Record<string, unknown>;
+  let imageBase64 =
+    typeof bodyRec.imageBase64 === 'string' ? bodyRec.imageBase64.trim() : '';
+  const dataUrlPrefixMatch = imageBase64.match(/^data:[^;]+;base64,/i);
+  if (dataUrlPrefixMatch) {
+    imageBase64 = imageBase64.slice(dataUrlPrefixMatch[0].length);
+  }
+
+  const mimeType =
+    typeof bodyRec.mimeType === 'string' ? bodyRec.mimeType.trim().toLowerCase() : '';
+  const teamNameHint =
+    typeof bodyRec.teamNameHint === 'string'
+      ? bodyRec.teamNameHint.trim().slice(0, 80)
+      : '';
+
+  if (!imageBase64) {
+    return {
+      status: 400,
+      data: { error: '画像データが空です。スクショを選び直してください。' },
+    };
+  }
+  if (imageBase64.length > MAX_BASE64_LENGTH) {
+    return {
+      status: 400,
+      data: {
+        error: '画像サイズが大きすぎます。別のスクショでお試しください。',
+      },
+    };
+  }
+  if (!ALLOWED_MIME_TYPES.has(mimeType)) {
+    return {
+      status: 400,
+      data: {
+        error:
+          '対応していない画像形式です（JPG / PNG / WebP に対応しています）。',
+      },
+    };
+  }
+
+  const geminiRes = await callGeminiVision(
+    geminiApiKey,
+    mimeType,
+    imageBase64,
+    teamNameHint
+  );
+  if (geminiRes.status !== 200 || !geminiRes.rawText) {
+    return {
+      status: geminiRes.status,
+      data: {
+        error:
+          geminiRes.errorMessage || 'スクショからスタッツを読み取れませんでした。',
+      },
+    };
+  }
+
+  try {
+    const parsedJson = JSON.parse(geminiRes.rawText) as unknown;
+    const cleaned = sanitizeParsedOutput(parsedJson);
+    return {
+      status: 200,
+      data: cleaned as unknown as Record<string, unknown>,
+    };
+  } catch {
+    return {
+      status: 502,
+      data: {
+        error:
+          '読み取り結果の解析に失敗しました。見やすいスクショでもう一度お試しください。',
+      },
+    };
+  }
+}
+
+export async function POST(request: Request): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json(
+      { error: 'リクエスト形式が正しくありません。' },
+      { status: 400 }
+    );
+  }
+
+  const result = await handleParseStatsPayload({
+    body,
+    authHeader: request.headers.get('authorization'),
+    env: {
+      geminiApiKey: process.env.GEMINI_API_KEY ?? '',
+      firebaseApiKey: process.env.VITE_FIREBASE_API_KEY ?? '',
+    },
+  });
+
+  return Response.json(result.data, { status: result.status });
+}

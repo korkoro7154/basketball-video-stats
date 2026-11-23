@@ -18,8 +18,12 @@ export interface Player {
 export interface GameVideoClip {
   id: string;
   label: string;
+  youtubeTitle?: string;
   youtubeId: string;
   youtubeUrl: string;
+  homeScore?: number;
+  awayScore?: number;
+  manualBoxScore?: Record<string, PlayerBoxScoreEntry>;
 }
 
 export type QuarterLabel = '1Q' | '2Q' | '3Q' | '4Q' | 'OT';
@@ -41,6 +45,7 @@ export type StatActionType =
 
 export interface GameStatEvent {
   id: string;
+  videoClipId?: string;
   quarter: QuarterLabel;
   timestampSec: number;
   team: 'home' | 'away';
@@ -69,6 +74,20 @@ export interface PlayerBoxScoreEntry {
 
 export type GameCategory = '公式戦' | '練習試合' | 'カップ戦';
 
+export type TeamUnit = 'A' | 'B' | 'その他' | '';
+
+export interface GameMatch {
+  id: string;
+  label: string;
+  teamUnit?: TeamUnit;
+  opponent: string;
+  homeScore: number;
+  awayScore: number;
+  videos: GameVideoClip[];
+  events: GameStatEvent[];
+  manualBoxScore?: Record<string, PlayerBoxScoreEntry>;
+}
+
 export interface GameRecord {
   id: string;
   title: string;
@@ -78,6 +97,7 @@ export interface GameRecord {
   homeScore: number;
   awayScore: number;
   youtubePlaylistId?: string;
+  matches?: GameMatch[];
   videos: GameVideoClip[];
   events: GameStatEvent[];
   manualBoxScore?: Record<string, PlayerBoxScoreEntry>;

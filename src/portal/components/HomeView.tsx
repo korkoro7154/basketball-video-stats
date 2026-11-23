@@ -41,11 +41,10 @@ export function HomeView({
 
   const summary = sortedGames.reduce(
     (acc, g) => {
-      const { homeScore, awayScore } = computeGameScores(g);
-      const res = getGameResult(homeScore, awayScore);
-      if (res === 'W') acc.wins += 1;
-      else if (res === 'L') acc.losses += 1;
-      else acc.draws += 1;
+      const sc = computeGameScores(g, 'ALL');
+      acc.wins += sc.wins;
+      acc.losses += sc.losses;
+      acc.draws += sc.draws;
       return acc;
     },
     { wins: 0, losses: 0, draws: 0 }
@@ -146,7 +145,15 @@ export function HomeView({
 
         {latestGame ? (
           (() => {
-            const { homeScore, awayScore } = computeGameScores(latestGame);
+            const {
+              homeScore,
+              awayScore,
+              hasStats,
+              recordedMatchCount,
+              totalMatchCount,
+              wins,
+              losses,
+            } = computeGameScores(latestGame, 'ALL');
             const res = getGameResult(homeScore, awayScore);
             return (
               <button
@@ -164,19 +171,42 @@ export function HomeView({
                 <div className="game-card-score-row">
                   <div className="score-team-wrap">
                     <span className="vs-label">vs {latestGame.opponent}</span>
-                    <span className="score-big">
-                      <span className="score-home">{homeScore}</span>
-                      <span className="score-dash">-</span>
-                      <span>{awayScore}</span>
-                    </span>
+                    {hasStats ? (
+                      recordedMatchCount > 1 ? (
+                        <span className="score-big">
+                          <span className="score-home">{wins}勝</span>
+                          <span className="score-dash">・</span>
+                          <span>{losses}敗</span>
+                        </span>
+                      ) : (
+                        <span className="score-big">
+                          <span className="score-home">{homeScore}</span>
+                          <span className="score-dash">-</span>
+                          <span>{awayScore}</span>
+                        </span>
+                      )
+                    ) : null}
                   </div>
-                  <span className={`result-pill result-${res}`}>
-                    {res === 'W' ? 'WIN' : res === 'L' ? 'LOSE' : 'DRAW'}
-                  </span>
+                  {hasStats ? (
+                    recordedMatchCount > 1 ? (
+                      <span className="chip-category">
+                        {recordedMatchCount}/{totalMatchCount}試合記録
+                      </span>
+                    ) : (
+                      <span className={`result-pill result-${res}`}>
+                        {res === 'W' ? 'WIN' : res === 'L' ? 'LOSE' : 'DRAW'}
+                      </span>
+                    )
+                  ) : (
+                    <span className="video-only-pill">動画のみ（未記録）</span>
+                  )}
                 </div>
                 <div className="game-card-foot">
                   <span>
-                    <PlayCircle size={14} /> 動画 {latestGame.videos.length}本
+                    <PlayCircle size={14} />{' '}
+                    {totalMatchCount > 1
+                      ? `全${totalMatchCount}試合・動画 ${latestGame.videos.length}本`
+                      : `動画 ${latestGame.videos.length}本`}
                   </span>
                   <span className="tap-guide">
                     動画・スタッツを見る <ChevronRight size={14} />

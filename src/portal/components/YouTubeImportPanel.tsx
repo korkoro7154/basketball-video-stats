@@ -9,7 +9,12 @@ import {
   Plus,
   RefreshCw,
 } from 'lucide-react';
-import type { GameRecord, PortalData, PracticeVideo } from '../types';
+import type {
+  GameRecord,
+  GameVideoClip,
+  PortalData,
+  PracticeVideo,
+} from '../types';
 import { requestYouTubeAccessToken } from '../firebase';
 import {
   fetchMyYouTubePlaylists,
@@ -17,6 +22,7 @@ import {
   fetchPlaylistVideos,
   hasDedicatedYouTubeApiKey,
 } from '../services/youtubeApi';
+import { organizeMatchesWithAi } from '../services/matchOrganizeApi';
 import type {
   YouTubePlaylistSummary,
   YouTubePlaylistVideoItem,
@@ -33,6 +39,14 @@ import {
   inferPlaylistKind,
   parseTimeString,
 } from '../utils/youtube';
+import {
+  applyAiOrganizedMatches,
+  autoGroupClipsIntoMatches,
+  getGameMatches,
+  syncGameFromMatches,
+} from '../utils/matches';
+import type { AiOrganizedMatchInput } from '../utils/matches';
+import { computeMatchSummary } from '../utils/stats';
 
 interface YouTubeImportPanelProps {
   data: PortalData;
@@ -94,6 +108,8 @@ interface PlaylistChecklistBoxProps {
   data: PortalData;
   importing: boolean;
   progressText: string;
+  autoOrganizeWithAi: boolean;
+  onToggleAutoOrganize: (value: boolean) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
   onToggleId: (id: string) => void;
@@ -109,6 +125,8 @@ function PlaylistChecklistBox({
   data,
   importing,
   progressText,
+  autoOrganizeWithAi,
+  onToggleAutoOrganize,
   onSelectAll,
   onClearSelection,
   onToggleId,
@@ -116,6 +134,10 @@ function PlaylistChecklistBox({
   onImport,
   children,
 }: PlaylistChecklistBoxProps) {
+  const hasGameItem = items.some(
+    (pl) => (kindOverrides[pl.id] ?? inferPlaylistKind(pl.title)) === 'game'
+  );
+
   return (
     <div className="demo-playlist-box">
       <div className="row-between">
@@ -179,6 +201,17 @@ function PlaylistChecklistBox({
 
       {children}
 
+      {hasGameItem && (
+        <label className="ocr-checkbox-row">
+          <input
+            type="checkbox"
+            checked={autoOrganizeWithAi}
+            onChange={(e) => onToggleAutoOrganize(e.target.checked)}
+          />
+          <span>取り込み時にAIで試合・何Q・A/Bを自動整理する</span>
+        </label>
+      )}
+
       <button
         type="button"
         className="btn-accent btn-block"
@@ -216,6 +249,7 @@ export function YouTubeImportPanel({
   const [importProgress, setImportProgress] = useState('');
   const [apiError, setApiError] = useState('');
   const [showApiGuide, setShowApiGuide] = useState(false);
+  const [autoOrganizeWithAi, setAutoOrganizeWithAi] = useState(true);
 
   // 2. 再生リストURLまとめて一括取り込み（文章や表ごと貼り付けOK）
   const [bulkText, setBulkText] = useState('');
@@ -348,6 +382,8 @@ export function YouTubeImportPanel({
       videos: YouTubePlaylistVideoItem[];
       opponentOverride?: string;
       tagsOverride?: string[];
+      prebuiltClips?: GameVideoClip[];
+      aiOrganizedMatches?: AiOrganizedMatchInput[];
     }>
   ) => {
     let addedGames = 0;
@@ -359,67 +395,131 @@ export function YouTubeImportPanel({
       const nextGames = [...prev.games];
       const nextPractices = [...prev.practices];
 
-      bundles.forEach(({ playlist, kind, videos, opponentOverride, tagsOverride }) => {
-        if (videos.length === 0) return;
+      bundles.forEach(
+        ({
+          playlist,
+          kind,
+          videos,
+          opponentOverride,
+          tagsOverride,
+          prebuiltClips,
+          aiOrganizedMatches,
+        }) => {
+          if (videos.length === 0) return;
 
-        if (kind === 'game') {
-          const existingIdx = nextGames.findIndex(
-            (g) => g.youtubePlaylistId === playlist.id
-          );
+          if (kind === 'game') {
+            const existingIdx = nextGames.findIndex(
+              (g) => g.youtubePlaylistId === playlist.id
+            );
 
-          if (existingIdx !== -1) {
-            const existing = nextGames[existingIdx];
-            const existingVideoIds = new Set(existing.videos.map((v) => v.youtubeId));
-            const newClips = videos
-              .filter((v) => !existingVideoIds.has(v.videoId))
-              .map((v, idx) => ({
-                id: createYtClientId('clip'),
-                label: inferClipLabelFromTitle(
-                  v.title,
-                  existing.videos.length + idx,
-                  existing.videos.length + videos.length
+            if (existingIdx !== -1) {
+              const existing = nextGames[existingIdx];
+              const existingVideoIds = new Set(existing.videos.map((v) => v.youtubeId));
+              const newClips: GameVideoClip[] = prebuiltClips
+                ? prebuiltClips.filter((c) => !existingVideoIds.has(c.youtubeId))
+                : videos
+                    .filter((v) => !existingVideoIds.has(v.videoId))
+                    .map((v, idx) => ({
+                      id: createYtClientId('clip'),
+                      label: inferClipLabelFromTitle(
+                        v.title,
+                        existing.videos.length + idx,
+                        existing.videos.length + videos.length
+                      ),
+                      youtubeTitle: v.title,
+                      youtubeId: v.videoId,
+                      youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+                    }));
+
+              if (newClips.length > 0) {
+                const baseMatches = getGameMatches(existing);
+                const appendedMatches =
+                  aiOrganizedMatches && aiOrganizedMatches.length > 0
+                    ? applyAiOrganizedMatches(
+                        [
+                          {
+                            id: 'import_tmp',
+                            label: '1試合目',
+                            teamUnit: '',
+                            opponent: existing.opponent,
+                            homeScore: 0,
+                            awayScore: 0,
+                            videos: newClips,
+                            events: [],
+                          },
+                        ],
+                        aiOrganizedMatches,
+                        existing.opponent
+                      ).map((m, idx) =>
+                        /^\d+試合目$/.test(m.label)
+                          ? { ...m, label: `${baseMatches.length + idx + 1}試合目` }
+                          : m
+                      )
+                    : autoGroupClipsIntoMatches(newClips, existing.opponent);
+                const mergedMatches = [...baseMatches, ...appendedMatches];
+                nextGames[existingIdx] = syncGameFromMatches(
+                  existing,
+                  mergedMatches,
+                  computeMatchSummary
+                );
+                updatedGames += 1;
+              }
+              latestGameId = existing.id;
+            } else {
+              const gameId = createYtClientId('game');
+              const opp =
+                opponentOverride?.trim() || inferOpponentFromTitle(playlist.title);
+              const clips: GameVideoClip[] =
+                prebuiltClips && prebuiltClips.length > 0
+                  ? prebuiltClips
+                  : videos.map((v, idx) => ({
+                      id: createYtClientId('clip'),
+                      label: inferClipLabelFromTitle(v.title, idx, videos.length),
+                      youtubeTitle: v.title,
+                      youtubeId: v.videoId,
+                      youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+                    }));
+              const matches =
+                aiOrganizedMatches && aiOrganizedMatches.length > 0
+                  ? applyAiOrganizedMatches(
+                      [
+                        {
+                          id: 'import_tmp',
+                          label: '1試合目',
+                          teamUnit: '',
+                          opponent: opp,
+                          homeScore: 0,
+                          awayScore: 0,
+                          videos: clips,
+                          events: [],
+                        },
+                      ],
+                      aiOrganizedMatches,
+                      opp
+                    )
+                  : autoGroupClipsIntoMatches(clips, opp);
+              const newGame: GameRecord = {
+                id: gameId,
+                title: playlist.title,
+                date: inferDateFromText(
+                  `${playlist.title} ${playlist.description}`,
+                  playlist.publishedAt
                 ),
-                youtubeId: v.videoId,
-                youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
-              }));
-
-            if (newClips.length > 0) {
-              nextGames[existingIdx] = {
-                ...existing,
-                videos: [...existing.videos, ...newClips],
+                opponent: opp,
+                category: '練習試合',
+                homeScore: 0,
+                awayScore: 0,
+                youtubePlaylistId: playlist.id,
+                notes: playlist.description ? playlist.description.slice(0, 180) : undefined,
+                matches,
+                videos: matches.flatMap((m) => m.videos),
+                events: [],
               };
-              updatedGames += 1;
+              nextGames.unshift(newGame);
+              addedGames += 1;
+              latestGameId = gameId;
             }
-            latestGameId = existing.id;
           } else {
-            const gameId = createYtClientId('game');
-            const newGame: GameRecord = {
-              id: gameId,
-              title: playlist.title,
-              date: inferDateFromText(
-                `${playlist.title} ${playlist.description}`,
-                playlist.publishedAt
-              ),
-              opponent:
-                opponentOverride?.trim() || inferOpponentFromTitle(playlist.title),
-              category: '練習試合',
-              homeScore: 0,
-              awayScore: 0,
-              youtubePlaylistId: playlist.id,
-              notes: playlist.description ? playlist.description.slice(0, 180) : undefined,
-              videos: videos.map((v, idx) => ({
-                id: createYtClientId('clip'),
-                label: inferClipLabelFromTitle(v.title, idx, videos.length),
-                youtubeId: v.videoId,
-                youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
-              })),
-              events: [],
-            };
-            nextGames.unshift(newGame);
-            addedGames += 1;
-            latestGameId = gameId;
-          }
-        } else {
           const existingVideoIds = new Set(nextPractices.map((p) => p.youtubeId));
           const fallbackTag = prev.practiceTags[0] || '#速攻';
 
@@ -543,6 +643,8 @@ export function YouTubeImportPanel({
         kind: 'game' | 'practice';
         videos: YouTubePlaylistVideoItem[];
         tagsOverride?: string[];
+        prebuiltClips?: GameVideoClip[];
+        aiOrganizedMatches?: AiOrganizedMatchInput[];
       }> = [];
       let skippedCount = 0;
 
@@ -572,10 +674,66 @@ export function YouTubeImportPanel({
         }
 
         const kind = overrides[pl.id] ?? inferPlaylistKind(pl.title);
+        let prebuiltClips: GameVideoClip[] | undefined;
+        let aiOrganizedMatches: AiOrganizedMatchInput[] | undefined;
+
+        if (kind === 'game' && videos.length > 0) {
+          const existingGame = data.games.find(
+            (g) => g.youtubePlaylistId === pl.id
+          );
+          const existingVideoIds = new Set(
+            existingGame ? existingGame.videos.map((v) => v.youtubeId) : []
+          );
+          const targetVideos = existingGame
+            ? videos.filter((v) => !existingVideoIds.has(v.videoId))
+            : videos;
+          const baseCount = existingGame ? existingGame.videos.length : 0;
+          const totalForInfer = baseCount + targetVideos.length;
+
+          prebuiltClips = targetVideos.map((v, idx) => ({
+            id: createYtClientId('clip'),
+            label: inferClipLabelFromTitle(v.title, baseCount + idx, totalForInfer),
+            youtubeTitle: v.title,
+            youtubeId: v.videoId,
+            youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+          }));
+
+          if (autoOrganizeWithAi && prebuiltClips.length > 0) {
+            try {
+              setProgress(`AIが試合・何Qを整理中... (${i + 1}/${targets.length})`);
+              const oppHint = existingGame
+                ? existingGame.opponent
+                : inferOpponentFromTitle(pl.title);
+              const gameDateHint = existingGame
+                ? existingGame.date
+                : inferDateFromText(`${pl.title} ${pl.description}`, pl.publishedAt);
+              const orgRes = await organizeMatchesWithAi({
+                gameTitle: existingGame ? existingGame.title : pl.title,
+                gameDate: gameDateHint,
+                defaultOpponent: oppHint,
+                clips: prebuiltClips.map((c) => ({
+                  id: c.id,
+                  label: c.label,
+                  youtubeId: c.youtubeId,
+                  youtubeTitle: c.youtubeTitle,
+                })),
+                youtubeAccessToken: tokenToUse,
+              });
+              if (orgRes.matches.length > 0) {
+                aiOrganizedMatches = orgRes.matches;
+              }
+            } catch {
+              // Silent fallback to local rule-based grouping
+            }
+          }
+        }
+
         bundles.push({
           playlist: pl,
           kind,
           videos,
+          prebuiltClips,
+          aiOrganizedMatches,
           tagsOverride:
             kind === 'practice' &&
             practiceTagsOverride &&
@@ -747,18 +905,19 @@ export function YouTubeImportPanel({
             ...prev,
             games: prev.games.map((g) => {
               if (g.id !== singleTargetGameId) return g;
-              return {
-                ...g,
-                videos: [
-                  ...g.videos,
-                  {
-                    id: createYtClientId('clip'),
-                    label: singleClipLabel.trim() || `動画${g.videos.length + 1}`,
-                    youtubeId: videoId,
-                    youtubeUrl: singleUrlInput.trim(),
-                  },
-                ],
+              const newClip: GameVideoClip = {
+                id: createYtClientId('clip'),
+                label: singleClipLabel.trim() || `動画${g.videos.length + 1}`,
+                ...(singleTitle.trim() ? { youtubeTitle: singleTitle.trim() } : {}),
+                youtubeId: videoId,
+                youtubeUrl: singleUrlInput.trim(),
               };
+              const newMatches = autoGroupClipsIntoMatches([newClip], g.opponent);
+              return syncGameFromMatches(
+                g,
+                [...getGameMatches(g), ...newMatches],
+                computeMatchSummary
+              );
             }),
           }));
           onSelectActiveGame(singleTargetGameId);
@@ -771,6 +930,15 @@ export function YouTubeImportPanel({
       const opp = singleOpponent.trim() || '対戦相手';
       const title = singleTitle.trim() || `vs ${opp}`;
       const newGameId = createYtClientId('game');
+      const clips: GameVideoClip[] = [
+        {
+          id: createYtClientId('clip'),
+          label: singleClipLabel.trim() || '試合動画',
+          ...(singleTitle.trim() ? { youtubeTitle: singleTitle.trim() } : {}),
+          youtubeId: videoId || `demo_${newGameId}`,
+          youtubeUrl: singleUrlInput.trim(),
+        },
+      ];
       const newGame: GameRecord = {
         id: newGameId,
         title,
@@ -780,14 +948,8 @@ export function YouTubeImportPanel({
         homeScore: 0,
         awayScore: 0,
         youtubePlaylistId: playlistId || undefined,
-        videos: [
-          {
-            id: createYtClientId('clip'),
-            label: singleClipLabel.trim() || '試合動画',
-            youtubeId: videoId || `demo_${newGameId}`,
-            youtubeUrl: singleUrlInput.trim(),
-          },
-        ],
+        matches: autoGroupClipsIntoMatches(clips, opp),
+        videos: clips,
         events: [],
       };
       onUpdateData((prev) => ({
@@ -934,6 +1096,8 @@ export function YouTubeImportPanel({
             data={data}
             importing={importingBatch}
             progressText={importProgress}
+            autoOrganizeWithAi={autoOrganizeWithAi}
+            onToggleAutoOrganize={setAutoOrganizeWithAi}
             onSelectAll={() => setSelectedIds(playlists.map((p) => p.id))}
             onClearSelection={() => setSelectedIds([])}
             onToggleId={(id) =>
@@ -1026,6 +1190,8 @@ export function YouTubeImportPanel({
             data={data}
             importing={importingBulk}
             progressText={bulkProgress}
+            autoOrganizeWithAi={autoOrganizeWithAi}
+            onToggleAutoOrganize={setAutoOrganizeWithAi}
             onSelectAll={() =>
               setBulkSelectedIds(bulkPlaylists.map((p) => p.id))
             }

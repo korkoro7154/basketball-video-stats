@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  ArrowRightLeft,
   Check,
   Clock,
   Lock,
@@ -16,8 +17,10 @@ import {
 } from 'lucide-react';
 import type {
   GameCategory,
+  GameMatch,
   GameRecord,
   GameStatEvent,
+  GameVideoClip,
   Player,
   PlayerBoxScoreEntry,
   PortalData,
@@ -27,16 +30,29 @@ import type {
 } from '../types';
 import {
   STAT_META,
+  applyEventToEntry,
   computeGameScores,
+  computeMatchSummary,
   createEmptyBoxScoreEntry,
+  hasNonEmptyManualBox,
 } from '../utils/stats';
+import {
+  createMatchId,
+  formatMatchClipSummary,
+  formatMatchDisplayTitle,
+  getGameMatches,
+  syncGameFromMatches,
+} from '../utils/matches';
 import { formatSeconds } from '../utils/youtube';
 import { YouTubeImportPanel } from './YouTubeImportPanel';
+import { StatsScreenshotImporter } from './StatsScreenshotImporter';
+import type { OcrSaveBatchPayload } from './StatsScreenshotImporter';
+import { MatchOrganizerPanel } from './MatchOrganizerPanel';
 
 interface AdminViewProps {
   data: PortalData;
   currentUserEmail?: string;
-  onUpdateData: (updater: (prev: PortalData) => PortalData) => void;
+  onUpdateData: (updater: (prev: PortalData) => PortalData) => Promise<boolean>;
   onNotify: (message: string, tone?: 'success' | 'info' | 'danger') => void;
   onLockPin: () => void;
   onOpenGameDetail: (gameId: string) => void;
@@ -64,7 +80,11 @@ let nextSeq = 0;
 
 function createClientId(prefix: string): string {
   nextSeq += 1;
-  return `${prefix}_${nextSeq}_${crypto.randomUUID().slice(0, 8)}`;
+  const rand =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+  return `${prefix}_${nextSeq}_${rand}`;
 }
 
 function EmptyRosterNotice({ onOpenRoster }: { onOpenRoster: () => void }) {
@@ -96,7 +116,10 @@ export function AdminView({
   const [selectedGameId, setSelectedGameId] = useState<string>(
     () => data.games[0]?.id ?? ''
   );
-  const [inputMode, setInputMode] = useState<'live' | 'batch'>('live');
+  const [selectedMatchId, setSelectedMatchId] = useState<string>('');
+  const [selectedClipId, setSelectedClipId] = useState<string>('');
+  const [showManualInput, setShowManualInput] = useState(false);
+  const [inputMode, setInputMode] = useState<'live' | 'batch'>('batch');
   const [quarter, setQuarter] = useState<QuarterLabel>('1Q');
   const [timerSec, setTimerSec] = useState(0);
   const [timerActive, setTimerActive] = useState(false);
@@ -104,8 +127,10 @@ export function AdminView({
     () => data.players[0]?.id ?? 'away'
   );
 
-  // 新規試合作成ミニフォーム
+  // 新規試合作成・スタッツ移動フォーム
   const [showNewGameForm, setShowNewGameForm] = useState(false);
+  const [showMoveStatsForm, setShowMoveStatsForm] = useState(false);
+  const [moveTargetGameId, setMoveTargetGameId] = useState('');
   const [newGameTitle, setNewGameTitle] = useState('');
   const [newGameDate, setNewGameDate] = useState(
     () => new Date().toISOString().split('T')[0]
@@ -133,8 +158,42 @@ export function AdminView({
     return () => window.clearInterval(id);
   }, [timerActive]);
 
+  const sortedGames = [...data.games].sort((a, b) =>
+    b.date.localeCompare(a.date)
+  );
   const activeGame =
-    data.games.find((g) => g.id === selectedGameId) ?? data.games[0] ?? null;
+    sortedGames.find((g) => g.id === selectedGameId) ?? sortedGames[0] ?? null;
+  const activeMatches: GameMatch[] = activeGame
+    ? getGameMatches(activeGame)
+    : [];
+  const activeMatch: GameMatch | null =
+    activeMatches.find((m) => m.id === selectedMatchId) ??
+    activeMatches[0] ??
+    null;
+  const activeClip: GameVideoClip | null = activeMatch
+    ? (activeMatch.videos.find((v) => v.id === selectedClipId) ??
+        activeMatch.videos[0] ??
+        null)
+    : null;
+
+  const updateMatchesInGame = (
+    game: GameRecord,
+    updater: (matches: GameMatch[]) => GameMatch[]
+  ): GameRecord =>
+    syncGameFromMatches(
+      game,
+      updater(getGameMatches(game)),
+      computeMatchSummary
+    );
+
+  const updateSingleMatchInGame = (
+    game: GameRecord,
+    matchId: string,
+    updater: (match: GameMatch) => GameMatch
+  ): GameRecord =>
+    updateMatchesInGame(game, (matches) =>
+      matches.map((m) => (m.id === matchId ? updater(m) : m))
+    );
 
   const handleCreateGame = (e: React.FormEvent) => {
     e.preventDefault();
@@ -143,22 +202,33 @@ export function AdminView({
       return;
     }
     const id = createClientId('game');
+    const opp = newGameOpponent.trim();
+    const initialClip: GameVideoClip = {
+      id: createClientId('gv'),
+      label: '試合動画',
+      youtubeId: `demo_${id}`,
+      youtubeUrl: '',
+    };
+    const initialMatch: GameMatch = {
+      id: createClientId('match'),
+      label: '1試合目',
+      teamUnit: '',
+      opponent: opp,
+      homeScore: 0,
+      awayScore: 0,
+      videos: [initialClip],
+      events: [],
+    };
     const created: GameRecord = {
       id,
-      title: newGameTitle.trim() || `vs ${newGameOpponent.trim()}`,
+      title: newGameTitle.trim() || `vs ${opp}`,
       date: newGameDate,
-      opponent: newGameOpponent.trim(),
+      opponent: opp,
       category: newGameCategory,
       homeScore: 0,
       awayScore: 0,
-      videos: [
-        {
-          id: createClientId('gv'),
-          label: '試合動画',
-          youtubeId: `demo_${id}`,
-          youtubeUrl: '',
-        },
-      ],
+      matches: [initialMatch],
+      videos: [initialClip],
       events: [],
     };
     onUpdateData((prev) => ({
@@ -166,6 +236,8 @@ export function AdminView({
       games: [created, ...prev.games],
     }));
     setSelectedGameId(id);
+    setSelectedMatchId(initialMatch.id);
+    setSelectedClipId('');
     setNewGameTitle('');
     setNewGameOpponent('');
     setShowNewGameForm(false);
@@ -174,7 +246,7 @@ export function AdminView({
 
   // 2タップ入力で記録
   const handleQuickRecordStat = (type: StatActionType) => {
-    if (!activeGame) return;
+    if (!activeGame || !activeMatch) return;
 
     const isAway = selectedTarget === 'away';
     const player = isAway
@@ -188,6 +260,7 @@ export function AdminView({
 
     const newEvent: GameStatEvent = {
       id: createClientId('ev'),
+      videoClipId: activeClip?.id,
       quarter,
       timestampSec: timerSec,
       team: isAway ? 'away' : 'home',
@@ -199,14 +272,10 @@ export function AdminView({
       ...prev,
       games: prev.games.map((g) => {
         if (g.id !== activeGame.id) return g;
-        const nextEvents = [...g.events, newEvent];
-        const pts = STAT_META[type].points;
-        return {
-          ...g,
-          events: nextEvents,
-          homeScore: isAway ? g.homeScore : g.homeScore + pts,
-          awayScore: isAway ? g.awayScore + pts : g.awayScore,
-        };
+        return updateSingleMatchInGame(g, activeMatch.id, (m) => ({
+          ...m,
+          events: [...m.events, newEvent],
+        }));
       }),
     }));
 
@@ -215,22 +284,19 @@ export function AdminView({
   };
 
   const handleUndoLastEvent = () => {
-    if (!activeGame || activeGame.events.length === 0) return;
-    const removed = activeGame.events[activeGame.events.length - 1];
-    const pts = STAT_META[removed.type].points;
+    if (!activeGame || !activeMatch) return;
+    if (activeMatch.events.length === 0) return;
+
+    const removed = activeMatch.events[activeMatch.events.length - 1];
 
     onUpdateData((prev) => ({
       ...prev,
       games: prev.games.map((g) => {
         if (g.id !== activeGame.id) return g;
-        return {
-          ...g,
-          events: g.events.slice(0, -1),
-          homeScore:
-            removed.team === 'home' ? Math.max(0, g.homeScore - pts) : g.homeScore,
-          awayScore:
-            removed.team === 'away' ? Math.max(0, g.awayScore - pts) : g.awayScore,
-        };
+        return updateSingleMatchInGame(g, activeMatch.id, (m) => ({
+          ...m,
+          events: m.events.slice(0, -1),
+        }));
       }),
     }));
     onNotify(`直前の記録（${STAT_META[removed.type].label}）を取り消しました`, 'info');
@@ -252,145 +318,409 @@ export function AdminView({
     | 'to'
     | 'pf';
 
-  const getCurrentBatchBox = (game: GameRecord): Record<string, PlayerBoxScoreEntry> => {
-    if (game.manualBoxScore && Object.keys(game.manualBoxScore).length > 0) {
-      return game.manualBoxScore;
+  const getCurrentBatchBox = (
+    match: GameMatch | null
+  ): Record<string, PlayerBoxScoreEntry> => {
+    if (match && hasNonEmptyManualBox(match.manualBoxScore)) {
+      return match.manualBoxScore!;
     }
     const base: Record<string, PlayerBoxScoreEntry> = {};
     data.players.forEach((p) => {
       base[p.id] = createEmptyBoxScoreEntry(p.id);
     });
-    game.events
+    if (!match) return base;
+    match.events
       .filter((e) => e.team === 'home' && e.playerId)
       .forEach((e) => {
         const cur = base[e.playerId!];
-        if (!cur) return;
-        if (e.type === '2P_MADE') {
-          cur.pts += 2;
-          cur.fgm += 1;
-          cur.fga += 1;
-        } else if (e.type === '2P_MISS') {
-          cur.fga += 1;
-        } else if (e.type === '3P_MADE') {
-          cur.pts += 3;
-          cur.fgm += 1;
-          cur.fga += 1;
-          cur.tpm += 1;
-          cur.tpa += 1;
-        } else if (e.type === '3P_MISS') {
-          cur.fga += 1;
-          cur.tpa += 1;
-        } else if (e.type === 'FT_MADE') {
-          cur.pts += 1;
-          cur.ftm += 1;
-          cur.fta += 1;
-        } else if (e.type === 'FT_MISS') {
-          cur.fta += 1;
-        } else if (e.type === 'OREB') cur.oreb += 1;
-        else if (e.type === 'DREB') cur.dreb += 1;
-        else if (e.type === 'AST') cur.ast += 1;
-        else if (e.type === 'STL') cur.stl += 1;
-        else if (e.type === 'BLK') cur.blk += 1;
-        else if (e.type === 'TO') cur.to += 1;
-        else if (e.type === 'PF') cur.pf += 1;
+        if (cur) applyEventToEntry(cur, e.type);
       });
     return base;
   };
 
   const adjustBatchStat = (playerId: string, field: BatchField, delta: number) => {
-    if (!activeGame) return;
+    if (!activeGame || !activeMatch) return;
 
     onUpdateData((prev) => ({
       ...prev,
       games: prev.games.map((g) => {
         if (g.id !== activeGame.id) return g;
-        const map = { ...getCurrentBatchBox(g) };
-        const cur = { ...(map[playerId] ?? createEmptyBoxScoreEntry(playerId)) };
+        return updateSingleMatchInGame(g, activeMatch.id, (m) => {
+          const map = { ...getCurrentBatchBox(m) };
+          const cur = { ...(map[playerId] ?? createEmptyBoxScoreEntry(playerId)) };
 
-        const twoPm = Math.max(0, cur.fgm - cur.tpm);
-        const twoPmiss = Math.max(0, cur.fga - cur.tpa - twoPm);
-        const tpMiss = Math.max(0, cur.tpa - cur.tpm);
-        const ftMiss = Math.max(0, cur.fta - cur.ftm);
+          const twoPm = Math.max(0, cur.fgm - cur.tpm);
+          const twoPmiss = Math.max(0, cur.fga - cur.tpa - twoPm);
+          const tpMiss = Math.max(0, cur.tpa - cur.tpm);
+          const ftMiss = Math.max(0, cur.fta - cur.ftm);
 
-        let nextTwoPm = twoPm;
-        let nextTwoPmiss = twoPmiss;
-        let nextTpm = cur.tpm;
-        let nextTpMiss = tpMiss;
-        let nextFtm = cur.ftm;
-        let nextFtMiss = ftMiss;
+          let nextTwoPm = twoPm;
+          let nextTwoPmiss = twoPmiss;
+          let nextTpm = cur.tpm;
+          let nextTpMiss = tpMiss;
+          let nextFtm = cur.ftm;
+          let nextFtMiss = ftMiss;
 
-        switch (field) {
-          case 'twoPm':
-            nextTwoPm = Math.max(0, twoPm + delta);
-            break;
-          case 'twoPmiss':
-            nextTwoPmiss = Math.max(0, twoPmiss + delta);
-            break;
-          case 'tpMade':
-            nextTpm = Math.max(0, cur.tpm + delta);
-            break;
-          case 'tpMiss':
-            nextTpMiss = Math.max(0, tpMiss + delta);
-            break;
-          case 'ftMade':
-            nextFtm = Math.max(0, cur.ftm + delta);
-            break;
-          case 'ftMiss':
-            nextFtMiss = Math.max(0, ftMiss + delta);
-            break;
-          case 'oreb':
-            cur.oreb = Math.max(0, cur.oreb + delta);
-            break;
-          case 'dreb':
-            cur.dreb = Math.max(0, cur.dreb + delta);
-            break;
-          case 'ast':
-            cur.ast = Math.max(0, cur.ast + delta);
-            break;
-          case 'stl':
-            cur.stl = Math.max(0, cur.stl + delta);
-            break;
-          case 'blk':
-            cur.blk = Math.max(0, cur.blk + delta);
-            break;
-          case 'to':
-            cur.to = Math.max(0, cur.to + delta);
-            break;
-          case 'pf':
-            cur.pf = Math.max(0, cur.pf + delta);
-            break;
-        }
+          switch (field) {
+            case 'twoPm':
+              nextTwoPm = Math.max(0, twoPm + delta);
+              break;
+            case 'twoPmiss':
+              nextTwoPmiss = Math.max(0, twoPmiss + delta);
+              break;
+            case 'tpMade':
+              nextTpm = Math.max(0, cur.tpm + delta);
+              break;
+            case 'tpMiss':
+              nextTpMiss = Math.max(0, tpMiss + delta);
+              break;
+            case 'ftMade':
+              nextFtm = Math.max(0, cur.ftm + delta);
+              break;
+            case 'ftMiss':
+              nextFtMiss = Math.max(0, ftMiss + delta);
+              break;
+            case 'oreb':
+              cur.oreb = Math.max(0, cur.oreb + delta);
+              break;
+            case 'dreb':
+              cur.dreb = Math.max(0, cur.dreb + delta);
+              break;
+            case 'ast':
+              cur.ast = Math.max(0, cur.ast + delta);
+              break;
+            case 'stl':
+              cur.stl = Math.max(0, cur.stl + delta);
+              break;
+            case 'blk':
+              cur.blk = Math.max(0, cur.blk + delta);
+              break;
+            case 'to':
+              cur.to = Math.max(0, cur.to + delta);
+              break;
+            case 'pf':
+              cur.pf = Math.max(0, cur.pf + delta);
+              break;
+          }
 
-        cur.tpm = nextTpm;
-        cur.tpa = nextTpm + nextTpMiss;
-        cur.fgm = nextTwoPm + nextTpm;
-        cur.fga = cur.fgm + nextTwoPmiss + nextTpMiss;
-        cur.ftm = nextFtm;
-        cur.fta = nextFtm + nextFtMiss;
-        cur.pts = nextTwoPm * 2 + nextTpm * 3 + nextFtm;
+          cur.tpm = nextTpm;
+          cur.tpa = nextTpm + nextTpMiss;
+          cur.fgm = nextTwoPm + nextTpm;
+          cur.fga = cur.fgm + nextTwoPmiss + nextTpMiss;
+          cur.ftm = nextFtm;
+          cur.fta = nextFtm + nextFtMiss;
+          cur.pts = nextTwoPm * 2 + nextTpm * 3 + nextFtm;
 
-        map[playerId] = cur;
-        const totalHomePts = Object.values(map).reduce((sum, item) => sum + item.pts, 0);
+          map[playerId] = cur;
+          const totalHomePts = Object.values(map).reduce(
+            (sum, item) => sum + item.pts,
+            0
+          );
 
-        return {
-          ...g,
-          manualBoxScore: map,
-          homeScore: totalHomePts,
-        };
+          return {
+            ...m,
+            manualBoxScore: map,
+            homeScore: totalHomePts,
+          };
+        });
       }),
     }));
   };
 
-  const adjustAwayScoreBatch = (delta: number) => {
-    if (!activeGame) return;
+  const adjustMatchScoreField = (
+    field: 'homeScore' | 'awayScore',
+    delta: number
+  ) => {
+    if (!activeGame || !activeMatch) return;
     onUpdateData((prev) => ({
+      ...prev,
+      games: prev.games.map((g) => {
+        if (g.id !== activeGame.id) return g;
+        return updateSingleMatchInGame(g, activeMatch.id, (m) => ({
+          ...m,
+          [field]: Math.max(0, (m[field] ?? 0) + delta),
+        }));
+      }),
+    }));
+  };
+
+  const handleApplyOcrStats = async (
+    payload: OcrSaveBatchPayload
+  ): Promise<boolean> => {
+    if (!activeGame || payload.items.length === 0) return false;
+    const normalizeName = (s: string) =>
+      s.replace(/[\s\u3000]+/g, '').toLowerCase();
+
+    const newPlayersToAdd: Player[] = [];
+    const workingPlayers = [...data.players];
+
+    const preparedUpdates = payload.items.map((item) => {
+      const manualBox: Record<string, PlayerBoxScoreEntry> = {};
+
+      for (const row of item.rows) {
+        const num = row.number.trim();
+        const normName = normalizeName(row.name);
+        let existing =
+          (num
+            ? workingPlayers.find((p) => p.number.trim() === num)
+            : undefined) ??
+          (normName
+            ? workingPlayers.find((p) => normalizeName(p.name) === normName)
+            : undefined);
+
+        if (!existing && payload.autoAddMissingPlayers) {
+          const created: Player = {
+            id: createClientId('p'),
+            number: num || '-',
+            name: row.name.trim() || `選手${workingPlayers.length + 1}`,
+            position: '',
+            grade: '',
+          };
+          workingPlayers.push(created);
+          newPlayersToAdd.push(created);
+          existing = created;
+        }
+
+        if (!existing) continue;
+
+        const pts = row.twoPm * 2 + row.threePm * 3 + row.ftm;
+        const fgm = row.twoPm + row.threePm;
+        const fga = row.twoPa + row.threePa;
+
+        manualBox[existing.id] = {
+          playerId: existing.id,
+          pts,
+          fgm,
+          fga,
+          tpm: row.threePm,
+          tpa: row.threePa,
+          ftm: row.ftm,
+          fta: row.fta,
+          oreb: row.oreb,
+          dreb: row.dreb,
+          ast: row.ast,
+          stl: row.stl,
+          blk: row.blk,
+          to: row.to,
+          pf: row.pf,
+        };
+      }
+
+      const boxTotalPts = Object.values(manualBox).reduce(
+        (sum, entry) => sum + entry.pts,
+        0
+      );
+      const finalHomeScore = boxTotalPts > 0 ? boxTotalPts : item.homeScore;
+
+      return {
+        targetMatchId: item.targetMatchId,
+        awayTeamName: item.awayTeamName,
+        teamUnit: item.teamUnit,
+        manualBox,
+        hasBox: Object.keys(manualBox).length > 0,
+        homeScore: finalHomeScore,
+        awayScore: item.awayScore,
+      };
+    });
+
+    const ok = await onUpdateData((prev) => {
+      const existingIds = new Set(prev.players.map((p) => p.id));
+      const mergedPlayers = [
+        ...prev.players,
+        ...newPlayersToAdd.filter((p) => !existingIds.has(p.id)),
+      ];
+
+      const nextGames = prev.games.map((g) => {
+        if (g.id !== activeGame.id) return g;
+        const workingMatches = [...getGameMatches(g)];
+
+        for (const patch of preparedUpdates) {
+          const targetIdx =
+            patch.targetMatchId !== '__new__'
+              ? workingMatches.findIndex((m) => m.id === patch.targetMatchId)
+              : -1;
+
+          if (targetIdx !== -1) {
+            const cur = workingMatches[targetIdx];
+            workingMatches[targetIdx] = {
+              ...cur,
+              opponent: patch.awayTeamName || cur.opponent,
+              teamUnit: patch.teamUnit || cur.teamUnit,
+              manualBoxScore: patch.hasBox
+                ? patch.manualBox
+                : cur.manualBoxScore,
+              homeScore: patch.homeScore,
+              awayScore: patch.awayScore,
+            };
+          } else {
+            workingMatches.push({
+              id: createMatchId(),
+              label: `${workingMatches.length + 1}試合目`,
+              teamUnit: patch.teamUnit,
+              opponent: patch.awayTeamName || g.opponent,
+              homeScore: patch.homeScore,
+              awayScore: patch.awayScore,
+              videos: [],
+              events: [],
+              manualBoxScore: patch.hasBox ? patch.manualBox : undefined,
+            });
+          }
+        }
+
+        return syncGameFromMatches(g, workingMatches, computeMatchSummary);
+      });
+
+      return {
+        ...prev,
+        players: mergedPlayers,
+        games: nextGames,
+      };
+    });
+
+    if (!ok) return false;
+
+    const suffix =
+      newPlayersToAdd.length > 0
+        ? `（名簿に${newPlayersToAdd.length}名追加）`
+        : '';
+    onNotify(
+      `${preparedUpdates.length}件のスクショスタッツを保存しました${suffix}`,
+      'success'
+    );
+    return true;
+  };
+
+  const clearStatsFromGame = (game: GameRecord): GameRecord => {
+    const clearedMatches = getGameMatches(game).map((m) => ({
+      ...m,
+      homeScore: 0,
+      awayScore: 0,
+      events: [],
+      manualBoxScore: undefined,
+    }));
+    return syncGameFromMatches(game, clearedMatches, computeMatchSummary);
+  };
+
+  const handleCommitMatches = async (nextMatches: GameMatch[]) => {
+    if (!activeGame) return;
+    await onUpdateData((prev) => ({
       ...prev,
       games: prev.games.map((g) =>
         g.id === activeGame.id
-          ? { ...g, awayScore: Math.max(0, g.awayScore + delta) }
+          ? syncGameFromMatches(g, nextMatches, computeMatchSummary)
           : g
       ),
     }));
+  };
+
+  const handleMoveGameStats = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeGame || !moveTargetGameId || moveTargetGameId === activeGame.id) {
+      return;
+    }
+    const targetGame = data.games.find((g) => g.id === moveTargetGameId);
+    if (!targetGame) return;
+
+    if (
+      !window.confirm(
+        `「${activeGame.title}」のスタッツ記録を「${targetGame.title}」へ移動しますか？\n（※どちらの動画もそのまま残ります。移動先の既存スタッツは上書きされます）`
+      )
+    ) {
+      return;
+    }
+
+    const ok = await onUpdateData((prev) => {
+      const src = prev.games.find((g) => g.id === activeGame.id);
+      const dst = prev.games.find((g) => g.id === moveTargetGameId);
+      if (!src || !dst) return prev;
+
+      const srcMatches = getGameMatches(src);
+      const dstMatches = getGameMatches(dst);
+      const maxLen = Math.max(srcMatches.length, dstMatches.length);
+      const nextDstMatches: GameMatch[] = [];
+
+      for (let i = 0; i < maxLen; i += 1) {
+        const sMatch = srcMatches[i];
+        const dMatch = dstMatches[i];
+        if (dMatch && sMatch) {
+          const sSum = computeMatchSummary(sMatch);
+          nextDstMatches.push({
+            ...dMatch,
+            opponent: sSum.hasStats && sMatch.opponent ? sMatch.opponent : dMatch.opponent,
+            teamUnit: sMatch.teamUnit || dMatch.teamUnit,
+            homeScore: sMatch.homeScore,
+            awayScore: sMatch.awayScore,
+            manualBoxScore: sMatch.manualBoxScore,
+            events: sMatch.events.map((ev, evIdx) => ({
+              ...ev,
+              videoClipId: dMatch.videos[evIdx % Math.max(1, dMatch.videos.length)]?.id,
+            })),
+          });
+        } else if (dMatch) {
+          nextDstMatches.push({
+            ...dMatch,
+            homeScore: 0,
+            awayScore: 0,
+            manualBoxScore: undefined,
+            events: [],
+          });
+        } else if (sMatch && computeMatchSummary(sMatch).hasStats) {
+          nextDstMatches.push({
+            ...sMatch,
+            id: createMatchId(),
+            videos: [],
+          });
+        }
+      }
+
+      const nextDstGame = syncGameFromMatches(
+        dst,
+        nextDstMatches,
+        computeMatchSummary
+      );
+      const clearedSrcGame = clearStatsFromGame(src);
+
+      return {
+        ...prev,
+        games: prev.games.map((g) => {
+          if (g.id === src.id) return clearedSrcGame;
+          if (g.id === dst.id) return nextDstGame;
+          return g;
+        }),
+      };
+    });
+
+    if (ok) {
+      setSelectedGameId(moveTargetGameId);
+      setSelectedMatchId('');
+      setSelectedClipId('');
+      setShowMoveStatsForm(false);
+      setMoveTargetGameId('');
+      onNotify(`スタッツを「${targetGame.title}」へ移動しました`, 'success');
+    }
+  };
+
+  const handleResetGameStats = async () => {
+    if (!activeGame) return;
+    if (
+      !window.confirm(
+        `「${activeGame.title}」のスタッツ記録だけをリセットしますか？\n（※YouTube動画はそのまま残ります）`
+      )
+    ) {
+      return;
+    }
+
+    const ok = await onUpdateData((prev) => ({
+      ...prev,
+      games: prev.games.map((g) =>
+        g.id === activeGame.id ? clearStatsFromGame(g) : g
+      ),
+    }));
+
+    if (ok) {
+      setShowMoveStatsForm(false);
+      onNotify('この試合のスタッツ記録をリセットしました', 'info');
+    }
   };
 
   // 選手追加・削除
@@ -541,11 +871,32 @@ export function AdminView({
     onNotify('練習動画を削除しました', 'info');
   };
 
-  const activeScores = activeGame
-    ? computeGameScores(activeGame)
-    : { homeScore: 0, awayScore: 0 };
+  const activeScores =
+    activeGame && activeMatch
+      ? computeGameScores(activeGame, activeMatch.id)
+      : {
+          homeScore: 0,
+          awayScore: 0,
+          hasStats: false,
+          recordedMatchCount: 0,
+          totalMatchCount: 0,
+          wins: 0,
+          losses: 0,
+          draws: 0,
+        };
 
-  const batchMap = activeGame ? getCurrentBatchBox(activeGame) : {};
+  const batchMap = getCurrentBatchBox(activeMatch);
+  const clipPlayerBoxPts = Object.values(batchMap).reduce(
+    (sum, item) => sum + item.pts,
+    0
+  );
+  const activeMatchEvents = activeMatch?.events ?? [];
+  const activeGameAllScores = activeGame
+    ? computeGameScores(activeGame, 'ALL')
+    : null;
+  const otherGames = activeGame
+    ? sortedGames.filter((g) => g.id !== activeGame.id)
+    : [];
 
   return (
     <div className="portal-section-stack">
@@ -584,33 +935,123 @@ export function AdminView({
       {/* ================================================= */}
       {subTab === 'stats' && (
         <div className="portal-section-stack">
-          {/* 対象試合選択 */}
+          {/* 1. 一番上：写真（スクショ）から記録 */}
+          {activeGame && (
+            <StatsScreenshotImporter
+              activeGame={activeGame}
+              activeMatches={activeMatches}
+              activeMatch={activeMatch}
+              games={sortedGames}
+              players={data.players}
+              teamName={data.teamName}
+              onApplyParsedStats={handleApplyOcrStats}
+              onChangeTargetGame={(gameId) => {
+                setSelectedGameId(gameId);
+                setSelectedMatchId('');
+                setSelectedClipId('');
+                setShowMoveStatsForm(false);
+              }}
+              onNotify={onNotify}
+              onOpenGameDetail={() => onOpenGameDetail(activeGame.id)}
+            />
+          )}
+
+          {/* 2. 試合日（再生リスト）の選択・管理 */}
           <section className="portal-card">
             <div className="row-between">
-              <span className="field-caption">記録する試合</span>
+              <span className="field-caption">対象の試合日（再生リスト）</span>
               <button
                 type="button"
                 className="btn-soft-sm"
                 onClick={() => setShowNewGameForm((v) => !v)}
               >
-                <Plus size={14} /> 新しい試合を作成
+                <Plus size={14} /> 新しい試合日を作成
               </button>
             </div>
 
             <select
               className="portal-select"
               value={activeGame?.id ?? ''}
-              onChange={(e) => setSelectedGameId(e.target.value)}
+              onChange={(e) => {
+                setSelectedGameId(e.target.value);
+                setSelectedMatchId('');
+                setSelectedClipId('');
+                setShowMoveStatsForm(false);
+              }}
             >
-              {data.games.map((g) => {
-                const sc = computeGameScores(g);
+              {sortedGames.map((g) => {
+                const sc = computeGameScores(g, 'ALL');
                 return (
                   <option key={g.id} value={g.id}>
-                    {g.date} vs {g.opponent}（{sc.homeScore}-{sc.awayScore}）
+                    {g.date} {g.title}（
+                    {sc.hasStats
+                      ? sc.totalMatchCount > 1
+                        ? `${sc.recordedMatchCount}/${sc.totalMatchCount}試合記録`
+                        : `${sc.homeScore}-${sc.awayScore}`
+                      : `全${sc.totalMatchCount}試合・未記録`}
+                    ）
                   </option>
                 );
               })}
             </select>
+
+            {activeGame && activeGameAllScores?.hasStats && (
+              <div className="quick-search-actions top-gap">
+                {otherGames.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn-soft-sm"
+                    onClick={() => {
+                      if (
+                        !moveTargetGameId ||
+                        moveTargetGameId === activeGame.id
+                      ) {
+                        setMoveTargetGameId(otherGames[0].id);
+                      }
+                      setShowMoveStatsForm((v) => !v);
+                    }}
+                  >
+                    <ArrowRightLeft size={14} /> 別の試合日へ移す
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn-soft-sm"
+                  onClick={() => void handleResetGameStats()}
+                >
+                  <RotateCcw size={14} /> スタッツだけリセット
+                </button>
+              </div>
+            )}
+
+            {showMoveStatsForm && activeGame && otherGames.length > 0 && (
+              <form
+                onSubmit={(e) => void handleMoveGameStats(e)}
+                className="inline-subform"
+              >
+                <span className="field-caption">
+                  移動先の試合日（動画はそのまま残ります）
+                </span>
+                <select
+                  className="portal-select"
+                  value={
+                    otherGames.some((g) => g.id === moveTargetGameId)
+                      ? moveTargetGameId
+                      : otherGames[0].id
+                  }
+                  onChange={(e) => setMoveTargetGameId(e.target.value)}
+                >
+                  {otherGames.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.date} {g.title}（動画{g.videos.length}本）
+                    </option>
+                  ))}
+                </select>
+                <button type="submit" className="btn-accent btn-block">
+                  この試合日へスタッツを移動する
+                </button>
+              </form>
+            )}
 
             {showNewGameForm && (
               <form onSubmit={handleCreateGame} className="inline-subform">
@@ -650,27 +1091,95 @@ export function AdminView({
                 </button>
               </form>
             )}
-
-            {/* 入力モード切替 */}
-            <div className="subtab-bar top-gap">
-              <button
-                type="button"
-                className={`subtab-btn ${inputMode === 'live' ? 'is-active' : ''}`}
-                onClick={() => setInputMode('live')}
-              >
-                ⚡ 試合中 2タップ入力
-              </button>
-              <button
-                type="button"
-                className={`subtab-btn ${inputMode === 'batch' ? 'is-active' : ''}`}
-                onClick={() => setInputMode('batch')}
-              >
-                📝 試合後 まとめ入力
-              </button>
-            </div>
           </section>
 
-          {activeGame && inputMode === 'live' && (
+          {/* 3. 試合と動画の整理 */}
+          {activeGame && (
+            <MatchOrganizerPanel
+              activeGame={activeGame}
+              matches={activeMatches}
+              onCommitMatches={handleCommitMatches}
+              onNotify={onNotify}
+            />
+          )}
+
+          {/* 4. 手動記録（専用ボタンで開いた時のみ表示） */}
+          {activeGame && (
+            <section className="portal-card">
+              <button
+                type="button"
+                className="ocr-toggle-table-btn"
+                onClick={() => setShowManualInput((v) => !v)}
+              >
+                <span className="match-org-toggle-left">
+                  <span>✍️ 手動でスタッツを記録・修正する</span>
+                </span>
+                <span>{showManualInput ? '閉じる ▲' : '開く ▼'}</span>
+              </button>
+
+              {!showManualInput ? (
+                <p className="card-date top-gap">
+                  写真を使わずに手入力したい時や、読み取った数値をあとから微調整したい時はここから開けます
+                </p>
+              ) : (
+                <div className="match-org-body">
+                  {activeMatches.length > 1 && (
+                    <label className="field-label">
+                      <span>手動で記録・修正する試合（全{activeMatches.length}試合）</span>
+                      <select
+                        className="portal-select"
+                        value={activeMatch?.id ?? ''}
+                        onChange={(e) => {
+                          setSelectedMatchId(e.target.value);
+                          setSelectedClipId('');
+                        }}
+                      >
+                        {activeMatches.map((m, idx) => {
+                          const sum = computeMatchSummary(m);
+                          const qSum = formatMatchClipSummary(m);
+                          const qText = qSum ? ` [${qSum}]` : '';
+                          const oppLabel =
+                            m.opponent && !activeGame.title.includes(m.opponent)
+                              ? ` vs ${m.opponent}`
+                              : '';
+                          return (
+                            <option key={m.id} value={m.id}>
+                              {idx + 1}. {formatMatchDisplayTitle(m)}
+                              {qText}
+                              {oppLabel}（
+                              {sum.hasStats
+                                ? `${sum.homeScore}-${sum.awayScore}`
+                                : '未記録'}
+                              ）
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </label>
+                  )}
+
+                  <div className="subtab-bar">
+                    <button
+                      type="button"
+                      className={`subtab-btn ${inputMode === 'batch' ? 'is-active' : ''}`}
+                      onClick={() => setInputMode('batch')}
+                    >
+                      📝 試合後 まとめ入力・修正
+                    </button>
+                    <button
+                      type="button"
+                      className={`subtab-btn ${inputMode === 'live' ? 'is-active' : ''}`}
+                      onClick={() => setInputMode('live')}
+                    >
+                      ⚡ 試合中 2タップ入力
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
+          {activeGame && showManualInput && inputMode === 'live' && (
             <>
               {/* スコア・クオーター・簡易時計 */}
               <section className="portal-card">
@@ -705,7 +1214,7 @@ export function AdminView({
                     </div>
                   </div>
                   <div className="live-team">
-                    <span>{activeGame.opponent}</span>
+                    <span>{activeMatch?.opponent || activeGame.opponent}</span>
                     <strong>{activeScores.awayScore}</strong>
                   </div>
                 </div>
@@ -723,12 +1232,28 @@ export function AdminView({
                   ))}
                 </div>
 
-                {activeGame.manualBoxScore &&
-                  Object.keys(activeGame.manualBoxScore).length > 0 && (
-                    <div className="admin-warn-note">
-                      この試合は「試合後まとめ入力」のデータが優先表示されています。ライブ入力を試す場合は上の「新しい試合を作成」か別の試合を選んでください。
-                    </div>
-                  )}
+                {activeMatch && activeMatch.videos.length > 1 && (
+                  <label className="field-label top-gap">
+                    <span>対象動画（プレイ履歴紐付け）</span>
+                    <select
+                      className="portal-select"
+                      value={activeClip?.id ?? ''}
+                      onChange={(e) => setSelectedClipId(e.target.value)}
+                    >
+                      {activeMatch.videos.map((clip, idx) => (
+                        <option key={clip.id} value={clip.id}>
+                          {idx + 1}. {clip.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {hasNonEmptyManualBox(activeMatch?.manualBoxScore) && (
+                  <div className="admin-warn-note">
+                    この試合は「スクショ読取・まとめ入力」のデータが優先表示されています。ライブ入力を試す場合は別の試合を選ぶか、まとめ入力で編集してください。
+                  </div>
+                )}
               </section>
 
               {/* Step 1: 選手選択 */}
@@ -761,7 +1286,9 @@ export function AdminView({
                     onClick={() => setSelectedTarget('away')}
                   >
                     <span className="pick-num">相手</span>
-                    <span className="pick-name">{activeGame.opponent}</span>
+                    <span className="pick-name">
+                      {activeMatch?.opponent || activeGame.opponent}
+                    </span>
                   </button>
                 </div>
               </section>
@@ -791,9 +1318,10 @@ export function AdminView({
                 {/* 直近ログ + Undo */}
                 <div className="undo-bar">
                   <div className="last-event-text">
-                    {activeGame.events.length > 0 ? (
+                    {activeMatchEvents.length > 0 ? (
                       (() => {
-                        const last = activeGame.events[activeGame.events.length - 1];
+                        const last =
+                          activeMatchEvents[activeMatchEvents.length - 1];
                         const p = last.playerId
                           ? data.players.find((pl) => pl.id === last.playerId)
                           : null;
@@ -805,6 +1333,8 @@ export function AdminView({
                               : '自チーム'
                         } - ${STAT_META[last.type].label}`;
                       })()
+                    ) : hasNonEmptyManualBox(activeMatch?.manualBoxScore) ? (
+                      'スクショ・まとめ入力のスタッツが保存済みです（「試合」タブで確認できます）'
                     ) : (
                       'まだこの試合の記録はありません'
                     )}
@@ -812,7 +1342,7 @@ export function AdminView({
                   <button
                     type="button"
                     className="btn-undo"
-                    disabled={activeGame.events.length === 0}
+                    disabled={activeMatchEvents.length === 0}
                     onClick={handleUndoLastEvent}
                   >
                     <Undo2 size={15} /> 1つ戻す
@@ -822,24 +1352,57 @@ export function AdminView({
             </>
           )}
 
-          {activeGame && inputMode === 'batch' && (
+          {activeGame && showManualInput && inputMode === 'batch' && (
             <section className="portal-card">
               <div className="batch-score-header">
                 <div>
-                  <span className="field-caption">合計スコア</span>
+                  <span className="field-caption">
+                    {activeMatch
+                      ? `${formatMatchDisplayTitle(activeMatch)} (vs ${activeMatch.opponent}) の記録`
+                      : '合計スコア'}
+                  </span>
                   <div className="batch-score-line">
                     <strong className="score-home">{activeScores.homeScore}</strong>
                     <span>-</span>
                     <strong>{activeScores.awayScore}</strong>
                   </div>
                 </div>
-                <div className="away-stepper">
+              </div>
+
+              <div className="batch-score-steppers">
+                <div className="batch-score-stepper-box">
+                  <span className="field-caption">自チーム得点</span>
+                  <div className="stepper-group">
+                    <button
+                      type="button"
+                      className="step-btn"
+                      disabled={clipPlayerBoxPts > 0}
+                      onClick={() => adjustMatchScoreField('homeScore', -1)}
+                    >
+                      -
+                    </button>
+                    <span className="step-val">{activeScores.homeScore}</span>
+                    <button
+                      type="button"
+                      className="step-btn"
+                      disabled={clipPlayerBoxPts > 0}
+                      onClick={() => adjustMatchScoreField('homeScore', 1)}
+                    >
+                      +
+                    </button>
+                  </div>
+                  {clipPlayerBoxPts > 0 && (
+                    <span className="card-date">選手得点から自動計算</span>
+                  )}
+                </div>
+
+                <div className="batch-score-stepper-box">
                   <span className="field-caption">相手得点</span>
                   <div className="stepper-group">
                     <button
                       type="button"
                       className="step-btn"
-                      onClick={() => adjustAwayScoreBatch(-1)}
+                      onClick={() => adjustMatchScoreField('awayScore', -1)}
                     >
                       -
                     </button>
@@ -847,7 +1410,7 @@ export function AdminView({
                     <button
                       type="button"
                       className="step-btn"
-                      onClick={() => adjustAwayScoreBatch(1)}
+                      onClick={() => adjustMatchScoreField('awayScore', 1)}
                     >
                       +
                     </button>
@@ -856,7 +1419,7 @@ export function AdminView({
               </div>
 
               <p className="table-helper-text">
-                スコアシートを見ながら「+ / -」を押すと、得点が自動計算されて即保存されます。
+                点数だけ先に入れることも、下の選手別「+ / -」で細かいスタッツを記録することもできます。
               </p>
 
               {data.players.length === 0 ? (
@@ -950,7 +1513,11 @@ export function AdminView({
           data={data}
           onUpdateData={onUpdateData}
           onNotify={onNotify}
-          onSelectActiveGame={setSelectedGameId}
+          onSelectActiveGame={(id) => {
+            setSelectedGameId(id);
+            setSelectedMatchId('');
+            setSelectedClipId('');
+          }}
         />
       )}
 
