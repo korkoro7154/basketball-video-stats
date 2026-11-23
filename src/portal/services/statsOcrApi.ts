@@ -28,6 +28,7 @@ export interface ParsedStatsResult {
   awayScore: number;
   players: ParsedOcrPlayer[];
   thumbDataUrl?: string;
+  failedModels?: string[];
 }
 
 export interface PreparedScreenshot {
@@ -63,7 +64,7 @@ export async function prepareScreenshotForOcr(
       throw new Error('画像サイズを取得できませんでした。');
     }
 
-    const maxSide = 2048;
+    const maxSide = 1500;
     const scale = Math.max(width, height) > maxSide ? maxSide / Math.max(width, height) : 1;
     const targetW = Math.max(1, Math.round(width * scale));
     const targetH = Math.max(1, Math.round(height * scale));
@@ -77,7 +78,7 @@ export async function prepareScreenshotForOcr(
     }
     ctx.drawImage(img, 0, 0, targetW, targetH);
 
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
     const commaIdx = dataUrl.indexOf(',');
     const imageBase64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
 
@@ -123,7 +124,8 @@ export async function prepareScreenshotForOcr(
 /** Sends a pre-encoded screenshot payload to the /api/parse-stats OCR endpoint. */
 export async function sendPreparedScreenshotToOcr(
   prepared: PreparedScreenshot,
-  teamNameHint?: string
+  teamNameHint?: string,
+  skipModels?: string[]
 ): Promise<ParsedStatsResult> {
   const { imageBase64, mimeType, thumbDataUrl } = prepared;
   const idToken = auth?.currentUser ? await auth.currentUser.getIdToken() : '';
@@ -144,6 +146,7 @@ export async function sendPreparedScreenshotToOcr(
         imageBase64,
         mimeType,
         teamNameHint: teamNameHint ?? '',
+        skipModels: skipModels ?? [],
       }),
     });
   } catch (err: unknown) {

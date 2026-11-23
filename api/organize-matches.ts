@@ -27,11 +27,10 @@ const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 const MAX_CLIPS = 60;
 
 const ORGANIZE_MODELS = [
-  { name: 'gemini-3.1-flash-lite', disableThinking: true, timeoutMs: 12_000 },
-  { name: 'gemini-3.5-flash-lite', disableThinking: false, timeoutMs: 12_000 },
-  { name: 'gemini-3.8-flash', disableThinking: false, timeoutMs: 14_000 },
-  { name: 'gemini-3.5-flash', disableThinking: false, timeoutMs: 12_000 },
-  { name: 'gemini-3-flash-preview', disableThinking: true, timeoutMs: 12_000 },
+  { name: 'gemini-3-flash-preview', disableThinking: true, timeoutMs: 14_000 },
+  { name: 'gemini-3.8-flash', disableThinking: false, timeoutMs: 8_000 },
+  { name: 'gemini-3.5-flash-lite', disableThinking: false, timeoutMs: 10_000 },
+  { name: 'gemini-3.1-flash-lite', disableThinking: true, timeoutMs: 10_000 },
 ] as const;
 
 const modelCooldownUntil = new Map<string, number>();

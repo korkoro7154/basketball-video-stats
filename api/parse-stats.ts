@@ -41,11 +41,11 @@ export interface ParsedStatsPayloadOutput {
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_BASE64_LENGTH = 8 * 1024 * 1024;
 const GEMINI_MODELS = [
-  { name: 'gemini-3.8-flash', disableThinking: false, timeoutMs: 13_000 },
-  { name: 'gemini-3.1-flash-lite', disableThinking: true, timeoutMs: 12_000 },
+  { name: 'gemini-3.8-flash', disableThinking: false, timeoutMs: 7_000 },
+  { name: 'gemini-3-flash-preview', disableThinking: true, timeoutMs: 14_000 },
+  { name: 'gemini-3.7-flash', disableThinking: false, timeoutMs: 7_000 },
+  { name: 'gemini-3.5-flash', disableThinking: false, timeoutMs: 9_000 },
   { name: 'gemini-3.5-flash-lite', disableThinking: false, timeoutMs: 12_000 },
-  { name: 'gemini-3.5-flash', disableThinking: false, timeoutMs: 12_000 },
-  { name: 'gemini-3-flash-preview', disableThinking: true, timeoutMs: 12_000 },
 ] as const;
 
 const modelCooldownUntil = new Map<string, number>();
@@ -148,30 +148,16 @@ async function verifyFirebaseIdToken(
 
 function buildExtractionPrompt(teamNameHint: string): string {
   const hintLine = teamNameHint
-    ? `Home team hint: "${teamNameHint}" (also commonly named "駒場高校男子バスケットボールチーム" or "駒場").`
-    : 'Home team is normally the top table (e.g. "駒場高校男子バスケットボールチーム").';
+    ? `Home team hint: "${teamNameHint}" (top table).`
+    : 'Home team is the top table.';
 
   return [
-    'You are reading a Japanese high school basketball stats screenshot and converting it into structured JSON.',
+    'Extract Japanese basketball stats from this screenshot into JSON.',
     hintLine,
-    '',
-    'First identify imageType:',
-    '- "box_score": A tabular player box score (e.g., titled "ボックススコア" with two stacked tables: top = home team, bottom = opponent).',
-    '- "shot_chart": A basketball court shot map ("シュートチャート"). Set players: [] and homeScore/awayScore: 0.',
-    '- "team_summary": A scoreboard or Team Box Score summary card without per-player rows. Extract homeTeamName, awayTeamName, homeScore, awayScore, and set players: [].',
-    '- "unknown": Any unrelated image.',
-    '',
-    'For "box_score" screenshots:',
-    '1. Extract ONLY the home team players (the top table / team matching the home hint) into players[]. Never include opponent players in players[].',
-    '2. Exact Easy Stats / BasketScore column order from left to right:',
-    '   No. | 選手名 | GS | PTS | 3P (M, A, %) | 2P (M, A, %) | DK | FT (M, A, %) | RBD (OR, DR, TOT) | AST | STL | BLK | TO | PF | TF | OF | FO | DFL | DQ | MIN',
-    '3. CRITICAL WARNING: The 3P group (M, A, %) comes BEFORE the 2P group (M, A, %). Do NOT swap 3P and 2P.',
-    '4. Ignore percentage columns (%), GS, DK, RBD TOT, TF, OF, FO, DFL, DQ, and MIN.',
-    '5. Check your numbers per player row: PTS must normally equal (twoPm * 2 + threePm * 3 + ftm).',
-    '6. Exclude "Team/Coaches" and "TOTALS" rows from players[], but read TOTALS.PTS from the top table as homeScore and TOTALS.PTS from the bottom opponent table as awayScore.',
-    '7. Record the bottom table title as awayTeamName.',
-    '8. Keep Japanese player names exactly as printed (preserving or normalizing spacing cleanly). Keep jersey number as printed string (e.g. "0", "2", "17").',
-    '9. Read screenshotDate as "MM-DD" from any visible date in the screenshot (e.g. iPad status bar "10月31日" -> "10-31"), or "" if none is visible.',
+    'imageType: "box_score" (player stats table), "shot_chart" (court map, players=[]), "team_summary" (score card without player rows, players=[]), or "unknown".',
+    'For box_score: extract ONLY the top/home team player rows into players[] (exclude Team/Coaches and TOTALS rows).',
+    'Read homeScore from top TOTALS PTS, awayScore from bottom TOTALS PTS, awayTeamName from bottom table title, and screenshotDate as "MM-DD" if visible (else "").',
+    'Columns left-to-right: No, Name, GS, PTS, 3P(M,A,%), 2P(M,A,%), DK, FT(M,A,%), RBD(OR,DR,TOT), AST, STL, BLK, TO, PF. Note 3P comes BEFORE 2P. Ignore %, GS, DK, RBD TOT, TF, OF, FO, DFL, DQ, MIN. Keep printed Japanese names and jersey numbers as strings.',
   ].join('\n');
 }
 
@@ -179,8 +165,14 @@ async function callGeminiVision(
   geminiApiKey: string,
   mimeType: string,
   imageBase64: string,
-  teamNameHint: string
-): Promise<{ status: number; rawText?: string; errorMessage?: string }> {
+  teamNameHint: string,
+  skipModels: Set<string>
+): Promise<{
+  status: number;
+  rawText?: string;
+  failedModels?: string[];
+  errorMessage?: string;
+}> {
   const contents = [
     {
       role: 'user',
@@ -197,11 +189,21 @@ async function callGeminiVision(
   ];
 
   const now = Date.now();
-  const readyModels = GEMINI_MODELS.filter(
+  const notSkipped = GEMINI_MODELS.filter((m) => !skipModels.has(m.name));
+  const readyNotSkipped = notSkipped.filter(
     (m) => (modelCooldownUntil.get(m.name) ?? 0) <= now
   );
-  const candidates = readyModels.length > 0 ? readyModels : [...GEMINI_MODELS];
-  const deadline = now + 28_000;
+  const coolingNotSkipped = notSkipped.filter(
+    (m) => (modelCooldownUntil.get(m.name) ?? 0) > now
+  );
+  const skippedFallback = GEMINI_MODELS.filter((m) => skipModels.has(m.name));
+  const candidates = [
+    ...readyNotSkipped,
+    ...coolingNotSkipped,
+    ...skippedFallback,
+  ];
+  const failedModels: string[] = [];
+  const deadline = now + 38_000;
 
   for (let i = 0; i < candidates.length; i += 1) {
     const remainingMs = deadline - Date.now();
@@ -241,6 +243,7 @@ async function callGeminiVision(
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error('Gemini vision fetch error:', model, errMsg);
+      failedModels.push(model);
       modelCooldownUntil.set(model, Date.now() + 30_000);
       if (i < candidates.length - 1) {
         continue;
@@ -255,12 +258,16 @@ async function callGeminiVision(
       const errBody = await res.text().catch(() => '');
       console.error('Gemini vision HTTP error:', model, res.status, errBody.slice(0, 300));
       if (res.status === 429) {
+        failedModels.push(model);
         const cooldownMs = errBody.toLowerCase().includes('per day')
           ? 10 * 60_000
           : 20_000;
         modelCooldownUntil.set(model, Date.now() + cooldownMs);
       } else if (res.status === 503) {
+        failedModels.push(model);
         modelCooldownUntil.set(model, Date.now() + 20_000);
+      } else if (res.status >= 500) {
+        failedModels.push(model);
       }
 
       const canFallback =
@@ -294,7 +301,7 @@ async function callGeminiVision(
       }>;
     };
     const text = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-    return { status: 200, rawText: text };
+    return { status: 200, rawText: text, failedModels };
   }
 
   return {
@@ -436,6 +443,14 @@ export async function handleParseStatsPayload(
     typeof bodyRec.teamNameHint === 'string'
       ? bodyRec.teamNameHint.trim().slice(0, 80)
       : '';
+  const rawSkipModels = Array.isArray(bodyRec.skipModels)
+    ? bodyRec.skipModels
+    : [];
+  const skipModels = new Set(
+    rawSkipModels
+      .filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
+      .map((m) => m.trim())
+  );
 
   if (!imageBase64) {
     return {
@@ -465,7 +480,8 @@ export async function handleParseStatsPayload(
     geminiApiKey,
     mimeType,
     imageBase64,
-    teamNameHint
+    teamNameHint,
+    skipModels
   );
   if (geminiRes.status !== 200 || !geminiRes.rawText) {
     return {
@@ -482,7 +498,12 @@ export async function handleParseStatsPayload(
     const cleaned = sanitizeParsedOutput(parsedJson);
     return {
       status: 200,
-      data: cleaned as unknown as Record<string, unknown>,
+      data: {
+        ...(cleaned as unknown as Record<string, unknown>),
+        ...(geminiRes.failedModels && geminiRes.failedModels.length > 0
+          ? { failedModels: geminiRes.failedModels }
+          : {}),
+      },
     };
   } catch {
     return {

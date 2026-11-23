@@ -412,11 +412,17 @@ export function StatsScreenshotImporter({
       setProgressText(formatSendProgress());
     }
 
+    const failedModelsThisBatch = new Set<string>();
+
     const sendWithRetry = async (
       entry: PreparedEntry
     ): Promise<ParsedStatsResult> => {
       try {
-        return await sendPreparedScreenshotToOcr(entry.prepared, teamName);
+        return await sendPreparedScreenshotToOcr(
+          entry.prepared,
+          teamName,
+          Array.from(failedModelsThisBatch)
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : '';
         const shouldRetry =
@@ -426,8 +432,12 @@ export function StatsScreenshotImporter({
         if (!shouldRetry) {
           throw err;
         }
-        await waitMs(6000);
-        return sendPreparedScreenshotToOcr(entry.prepared, teamName);
+        await waitMs(4000);
+        return sendPreparedScreenshotToOcr(
+          entry.prepared,
+          teamName,
+          Array.from(failedModelsThisBatch)
+        );
       }
     };
 
@@ -437,6 +447,11 @@ export function StatsScreenshotImporter({
         cursor += 1;
         try {
           const data = await sendWithRetry(candidate);
+          if (Array.isArray(data.failedModels)) {
+            for (const m of data.failedModels) {
+              failedModelsThisBatch.add(m);
+            }
+          }
           outcomes[candidate.index] = {
             ok: true,
             file: candidate.file,
