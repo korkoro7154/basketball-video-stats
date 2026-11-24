@@ -322,7 +322,8 @@ export function syncGameFromMatches(
   };
 }
 
-function mergeBoxScoreMaps(
+/** Sums two player box-score maps cleanly per player. */
+export function mergeBoxScoreMaps(
   a?: Record<string, PlayerBoxScoreEntry>,
   b?: Record<string, PlayerBoxScoreEntry>
 ): Record<string, PlayerBoxScoreEntry> | undefined {

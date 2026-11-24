@@ -34,6 +34,7 @@ import type {
 import {
   STAT_META,
   applyEventToEntry,
+  applyOcrBatchToPortalData,
   computeGameScores,
   computeMatchSummary,
   createEmptyBoxScoreEntry,
@@ -458,146 +459,33 @@ export function AdminView({
   const handleApplyOcrStats = async (
     payload: OcrSaveBatchPayload
   ): Promise<boolean> => {
-    if (!activeGame || payload.items.length === 0) return false;
-    const normalizeName = (s: string) =>
-      s.replace(/[\s\u3000]+/g, '').toLowerCase();
+    if (payload.items.length === 0) return false;
 
-    const newPlayersToAdd: Player[] = [];
-    const workingPlayers = [...data.players];
-
-    const preparedUpdates = payload.items.map((item) => {
-      const manualBox: Record<string, PlayerBoxScoreEntry> = {};
-
-      for (const row of item.rows) {
-        const num = row.number.trim();
-        const normName = normalizeName(row.name);
-        let existing =
-          (num
-            ? workingPlayers.find((p) => p.number.trim() === num)
-            : undefined) ??
-          (normName
-            ? workingPlayers.find((p) => normalizeName(p.name) === normName)
-            : undefined);
-
-        if (!existing && payload.autoAddMissingPlayers) {
-          const created: Player = {
-            id: createClientId('p'),
-            number: num || '-',
-            name: row.name.trim() || `選手${workingPlayers.length + 1}`,
-            position: '',
-            grade: '',
-          };
-          workingPlayers.push(created);
-          newPlayersToAdd.push(created);
-          existing = created;
-        }
-
-        if (!existing) continue;
-
-        const pts = row.twoPm * 2 + row.threePm * 3 + row.ftm;
-        const fgm = row.twoPm + row.threePm;
-        const fga = row.twoPa + row.threePa;
-
-        manualBox[existing.id] = {
-          playerId: existing.id,
-          pts,
-          fgm,
-          fga,
-          tpm: row.threePm,
-          tpa: row.threePa,
-          ftm: row.ftm,
-          fta: row.fta,
-          oreb: row.oreb,
-          dreb: row.dreb,
-          ast: row.ast,
-          stl: row.stl,
-          blk: row.blk,
-          to: row.to,
-          pf: row.pf,
-        };
-      }
-
-      const boxTotalPts = Object.values(manualBox).reduce(
-        (sum, entry) => sum + entry.pts,
-        0
-      );
-      const finalHomeScore = boxTotalPts > 0 ? boxTotalPts : item.homeScore;
-
-      return {
-        targetMatchId: item.targetMatchId,
-        awayTeamName: item.awayTeamName,
-        teamUnit: item.teamUnit,
-        manualBox,
-        hasBox: Object.keys(manualBox).length > 0,
-        homeScore: finalHomeScore,
-        awayScore: item.awayScore,
-      };
-    });
+    let addedCount = 0;
+    let updatedDayCount = 0;
+    let appliedCount = 0;
 
     const ok = await onUpdateData((prev) => {
-      const existingIds = new Set(prev.players.map((p) => p.id));
-      const mergedPlayers = [
-        ...prev.players,
-        ...newPlayersToAdd.filter((p) => !existingIds.has(p.id)),
-      ];
-
-      const nextGames = prev.games.map((g) => {
-        if (g.id !== activeGame.id) return g;
-        const workingMatches = [...getGameMatches(g)];
-
-        for (const patch of preparedUpdates) {
-          const targetIdx =
-            patch.targetMatchId !== '__new__'
-              ? workingMatches.findIndex((m) => m.id === patch.targetMatchId)
-              : -1;
-
-          if (targetIdx !== -1) {
-            const cur = workingMatches[targetIdx];
-            workingMatches[targetIdx] = {
-              ...cur,
-              opponent: patch.awayTeamName || cur.opponent,
-              teamUnit: patch.teamUnit || cur.teamUnit,
-              manualBoxScore: patch.hasBox
-                ? patch.manualBox
-                : cur.manualBoxScore,
-              homeScore: patch.homeScore,
-              awayScore: patch.awayScore,
-            };
-          } else {
-            workingMatches.push({
-              id: createMatchId(),
-              label: `${workingMatches.length + 1}試合目`,
-              teamUnit: patch.teamUnit,
-              opponent: patch.awayTeamName || g.opponent,
-              homeScore: patch.homeScore,
-              awayScore: patch.awayScore,
-              videos: [],
-              events: [],
-              manualBoxScore: patch.hasBox ? patch.manualBox : undefined,
-            });
-          }
-        }
-
-        return syncGameFromMatches(g, workingMatches, computeMatchSummary);
+      const result = applyOcrBatchToPortalData(prev, payload, {
+        fallbackGameId: activeGame?.id,
+        createPlayerId: createClientId,
+        createMatchIdFn: createMatchId,
       });
-
-      return {
-        ...prev,
-        players: mergedPlayers,
-        games: nextGames,
-      };
+      addedCount = result.addedPlayers.length;
+      updatedDayCount = result.updatedGameIds.length;
+      appliedCount = result.appliedItemCount;
+      return result.nextData;
     });
 
     if (!ok) return false;
 
     const suffix =
-      newPlayersToAdd.length > 0
-        ? `（名簿に${newPlayersToAdd.length}名追加）`
-        : '';
-    onNotify(
-      `${preparedUpdates.length}件のスクショスタッツを保存しました${suffix}`,
-      'success'
-    );
+      addedCount > 0 ? `（名簿に${addedCount}名追加）` : '';
+    const msg =
+      updatedDayCount > 1
+        ? `${updatedDayCount}日分（計${appliedCount}件）のスタッツをまとめて保存しました${suffix}`
+        : `${appliedCount}件のスタッツを保存しました${suffix}`;
+    onNotify(msg, 'success');
     return true;
   };
 
@@ -993,7 +881,7 @@ export function AdminView({
                 setShowMoveStatsForm(false);
               }}
               onNotify={onNotify}
-              onOpenGameDetail={() => onOpenGameDetail(activeGame.id)}
+              onOpenGameDetail={(gameId) => onOpenGameDetail(gameId || activeGame.id)}
             />
           )}
 
