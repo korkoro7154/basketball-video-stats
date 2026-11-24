@@ -1,13 +1,16 @@
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  Calendar,
   ChevronDown,
   ChevronUp,
+  Layers,
   Link2,
   ListVideo,
   PlaySquare,
   Plus,
   RefreshCw,
+  X,
 } from 'lucide-react';
 import type {
   GameRecord,
@@ -18,6 +21,7 @@ import type {
 import { requestYouTubeAccessToken } from '../firebase';
 import {
   fetchMyYouTubePlaylists,
+  fetchPlaylistById,
   fetchPlaylistsByIds,
   fetchPlaylistVideos,
   hasDedicatedYouTubeApiKey,
@@ -28,16 +32,22 @@ import type {
   YouTubePlaylistVideoItem,
 } from '../services/youtubeApi';
 import {
+  collectAllRegisteredVideoIds,
+  collectRegisteredGameVideoIds,
+  collectRegisteredPracticeVideoIds,
   extractAllYouTubePlaylistIds,
   extractHashtagsFromText,
   extractYouTubePlaylistId,
   extractYouTubePlaylistIdsFromHtml,
   extractYouTubeVideoId,
+  groupPlaylistVideosByDate,
   inferClipLabelFromTitle,
   inferDateFromText,
   inferOpponentFromTitle,
   inferPlaylistKind,
+  mergeSummaryDateGroupsIntoGames,
   parseTimeString,
+  shouldStopFetchingOlderPages,
 } from '../utils/youtube';
 import {
   applyAiOrganizedMatches,
@@ -47,6 +57,7 @@ import {
 } from '../utils/matches';
 import type { AiOrganizedMatchInput } from '../utils/matches';
 import { computeMatchSummary } from '../utils/stats';
+import './YouTubeImportPanel.css';
 
 interface YouTubeImportPanelProps {
   data: PortalData;
@@ -57,6 +68,73 @@ interface YouTubeImportPanelProps {
 
 const YT_TOKEN_STORAGE_KEY = 'portal_yt_access_token';
 const YT_EMAIL_STORAGE_KEY = 'portal_yt_account_email';
+const YT_SAVED_SUMMARY_STORAGE_KEY = 'portal_yt_saved_summary_playlists_v1';
+const DEFAULT_SUMMARY_SINCE_DATE = '2026-11-22';
+
+interface SavedSummaryPlaylist {
+  id: string;
+  url: string;
+  title: string;
+  sinceDate: string;
+  lastCheckedAt?: string;
+}
+
+function readSavedSummaryPlaylists(): SavedSummaryPlaylist[] {
+  try {
+    const raw = window.localStorage.getItem(YT_SAVED_SUMMARY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is SavedSummaryPlaylist => {
+        if (!item || typeof item !== 'object') return false;
+        const candidate = item as Record<string, unknown>;
+        return (
+          typeof candidate.id === 'string' &&
+          candidate.id.length > 0 &&
+          typeof candidate.url === 'string' &&
+          typeof candidate.title === 'string'
+        );
+      })
+      .map((item) => ({
+        id: item.id,
+        url: item.url,
+        title: item.title,
+        sinceDate:
+          typeof item.sinceDate === 'string'
+            ? item.sinceDate
+            : DEFAULT_SUMMARY_SINCE_DATE,
+        ...(typeof item.lastCheckedAt === 'string'
+          ? { lastCheckedAt: item.lastCheckedAt }
+          : {}),
+      }))
+      .slice(0, 10);
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedSummaryPlaylists(items: SavedSummaryPlaylist[]): void {
+  try {
+    window.localStorage.setItem(
+      YT_SAVED_SUMMARY_STORAGE_KEY,
+      JSON.stringify(items.slice(0, 10))
+    );
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function formatSavedCheckedAt(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  const hh = d.getHours().toString().padStart(2, '0');
+  const mm = d.getMinutes().toString().padStart(2, '0');
+  return `${m}/${day} ${hh}:${mm}`;
+}
 
 function readSessionItem(key: string): string {
   try {
@@ -114,6 +192,7 @@ interface PlaylistChecklistBoxProps {
   onClearSelection: () => void;
   onToggleId: (id: string) => void;
   onChangeKind: (id: string, kind: 'game' | 'practice') => void;
+  onOpenAsSummary?: (playlist: YouTubePlaylistSummary) => void;
   onImport: () => void;
   children?: React.ReactNode;
 }
@@ -131,6 +210,7 @@ function PlaylistChecklistBox({
   onClearSelection,
   onToggleId,
   onChangeKind,
+  onOpenAsSummary,
   onImport,
   children,
 }: PlaylistChecklistBoxProps) {
@@ -193,6 +273,15 @@ function PlaylistChecklistBox({
                 >
                   練習として取込
                 </button>
+                {onOpenAsSummary && kind === 'game' && (
+                  <button
+                    type="button"
+                    className="yt-split-action-btn"
+                    onClick={() => onOpenAsSummary(pl)}
+                  >
+                    <Calendar size={12} /> 日付ごとに取込
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -232,6 +321,31 @@ export function YouTubeImportPanel({
   onNotify,
   onSelectActiveGame,
 }: YouTubeImportPanelProps) {
+  const summarySectionRef = useRef<HTMLElement | null>(null);
+
+  // 0. まとめ再生リストから日付ごとに取り込み
+  const [savedSummaryPlaylists, setSavedSummaryPlaylists] = useState<
+    SavedSummaryPlaylist[]
+  >(() => readSavedSummaryPlaylists());
+  const [summaryUrlInput, setSummaryUrlInput] = useState(
+    () => readSavedSummaryPlaylists()[0]?.url ?? ''
+  );
+  const [summarySinceDate, setSummarySinceDate] = useState(
+    () => readSavedSummaryPlaylists()[0]?.sinceDate || DEFAULT_SUMMARY_SINCE_DATE
+  );
+  const [summaryPlaylist, setSummaryPlaylist] =
+    useState<YouTubePlaylistSummary | null>(null);
+  const [summaryRawVideos, setSummaryRawVideos] = useState<
+    YouTubePlaylistVideoItem[]
+  >([]);
+  const [summarySelectedDates, setSummarySelectedDates] = useState<string[]>([]);
+  const [summaryExpandedDates, setSummaryExpandedDates] = useState<string[]>([]);
+  const [summaryFetchedSinceDate, setSummaryFetchedSinceDate] = useState('');
+  const [summaryStoppedEarly, setSummaryStoppedEarly] = useState(false);
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [summaryProgress, setSummaryProgress] = useState('');
+  const [summaryError, setSummaryError] = useState('');
+
   // 1. YouTubeアカウント連携状態
   const [ytToken, setYtToken] = useState(() =>
     readSessionItem(YT_TOKEN_STORAGE_KEY)
@@ -265,6 +379,43 @@ export function YouTubeImportPanel({
   const [bulkError, setBulkError] = useState('');
 
   const detectedBulkIds = extractAllYouTubePlaylistIds(bulkText);
+
+  const registeredGameVideoIds = useMemo(
+    () => collectRegisteredGameVideoIds(data.games),
+    [data.games]
+  );
+  const existingGameDates = useMemo(
+    () => new Set(data.games.map((g) => g.date)),
+    [data.games]
+  );
+  const summaryGrouped = useMemo(
+    () =>
+      summaryPlaylist
+        ? groupPlaylistVideosByDate(summaryRawVideos, {
+            sinceDate: summarySinceDate,
+            registeredVideoIds: registeredGameVideoIds,
+          })
+        : null,
+    [summaryPlaylist, summaryRawVideos, summarySinceDate, registeredGameVideoIds]
+  );
+  const selectableSummaryDates = useMemo(
+    () =>
+      (summaryGrouped?.groups ?? [])
+        .filter((g) => !g.allRegistered)
+        .map((g) => g.date),
+    [summaryGrouped]
+  );
+  const effectiveSelectedSummaryDates = useMemo(
+    () =>
+      summarySelectedDates.filter((d) => selectableSummaryDates.includes(d)),
+    [summarySelectedDates, selectableSummaryDates]
+  );
+  const needsSummaryRefetchForEarlierDate = Boolean(
+    summaryPlaylist &&
+      summaryStoppedEarly &&
+      summaryFetchedSinceDate &&
+      (!summarySinceDate || summarySinceDate < summaryFetchedSinceDate)
+  );
 
   // 3. 1本ずつURL登録
   const [singleKind, setSingleKind] = useState<'game' | 'practice'>('practice');
@@ -394,6 +545,9 @@ export function YouTubeImportPanel({
     onUpdateData((prev) => {
       const nextGames = [...prev.games];
       const nextPractices = [...prev.practices];
+      const globalGameVideoIds = collectRegisteredGameVideoIds(nextGames);
+      const globalPracticeVideoIds =
+        collectRegisteredPracticeVideoIds(nextPractices);
 
       bundles.forEach(
         ({
@@ -414,22 +568,26 @@ export function YouTubeImportPanel({
 
             if (existingIdx !== -1) {
               const existing = nextGames[existingIdx];
-              const existingVideoIds = new Set(existing.videos.map((v) => v.youtubeId));
-              const newClips: GameVideoClip[] = prebuiltClips
-                ? prebuiltClips.filter((c) => !existingVideoIds.has(c.youtubeId))
-                : videos
-                    .filter((v) => !existingVideoIds.has(v.videoId))
-                    .map((v, idx) => ({
-                      id: createYtClientId('clip'),
-                      label: inferClipLabelFromTitle(
-                        v.title,
-                        existing.videos.length + idx,
-                        existing.videos.length + videos.length
-                      ),
-                      youtubeTitle: v.title,
-                      youtubeId: v.videoId,
-                      youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
-                    }));
+              const rawClips: GameVideoClip[] = prebuiltClips
+                ? prebuiltClips
+                : videos.map((v, idx) => ({
+                    id: createYtClientId('clip'),
+                    label: inferClipLabelFromTitle(
+                      v.title,
+                      existing.videos.length + idx,
+                      existing.videos.length + videos.length
+                    ),
+                    youtubeTitle: v.title,
+                    youtubeId: v.videoId,
+                    youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+                  }));
+              const newClips = rawClips.filter((c) => {
+                if (!c.youtubeId || globalGameVideoIds.has(c.youtubeId)) {
+                  return false;
+                }
+                globalGameVideoIds.add(c.youtubeId);
+                return true;
+              });
 
               if (newClips.length > 0) {
                 const baseMatches = getGameMatches(existing);
@@ -466,19 +624,30 @@ export function YouTubeImportPanel({
               }
               latestGameId = existing.id;
             } else {
+              const rawClips: GameVideoClip[] = prebuiltClips
+                ? prebuiltClips
+                : videos.map((v, idx) => ({
+                    id: createYtClientId('clip'),
+                    label: inferClipLabelFromTitle(v.title, idx, videos.length),
+                    youtubeTitle: v.title,
+                    youtubeId: v.videoId,
+                    youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+                  }));
+              const clips = rawClips.filter((c) => {
+                if (!c.youtubeId || globalGameVideoIds.has(c.youtubeId)) {
+                  return false;
+                }
+                globalGameVideoIds.add(c.youtubeId);
+                return true;
+              });
+
+              if (clips.length === 0) {
+                return;
+              }
+
               const gameId = createYtClientId('game');
               const opp =
                 opponentOverride?.trim() || inferOpponentFromTitle(playlist.title);
-              const clips: GameVideoClip[] =
-                prebuiltClips && prebuiltClips.length > 0
-                  ? prebuiltClips
-                  : videos.map((v, idx) => ({
-                      id: createYtClientId('clip'),
-                      label: inferClipLabelFromTitle(v.title, idx, videos.length),
-                      youtubeTitle: v.title,
-                      youtubeId: v.videoId,
-                      youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
-                    }));
               const matches =
                 aiOrganizedMatches && aiOrganizedMatches.length > 0
                   ? applyAiOrganizedMatches(
@@ -520,45 +689,45 @@ export function YouTubeImportPanel({
               latestGameId = gameId;
             }
           } else {
-          const existingVideoIds = new Set(nextPractices.map((p) => p.youtubeId));
-          const fallbackTag = prev.practiceTags[0] || '#速攻';
+            const fallbackTag = prev.practiceTags[0] || '#速攻';
 
-          videos.forEach((v) => {
-            if (existingVideoIds.has(v.videoId)) return;
-            existingVideoIds.add(v.videoId);
+            videos.forEach((v) => {
+              if (!v.videoId || globalPracticeVideoIds.has(v.videoId)) return;
+              globalPracticeVideoIds.add(v.videoId);
 
-            const autoTags = extractHashtagsFromText(
-              `${playlist.title} ${v.title} ${v.description}`,
-              prev.practiceTags
-            );
-            const finalTags =
-              tagsOverride && tagsOverride.length > 0
-                ? Array.from(new Set([...tagsOverride, ...autoTags]))
-                : autoTags.length > 0
-                  ? autoTags
-                  : [fallbackTag];
+              const autoTags = extractHashtagsFromText(
+                `${playlist.title} ${v.title} ${v.description}`,
+                prev.practiceTags
+              );
+              const finalTags =
+                tagsOverride && tagsOverride.length > 0
+                  ? Array.from(new Set([...tagsOverride, ...autoTags]))
+                  : autoTags.length > 0
+                    ? autoTags
+                    : [fallbackTag];
 
-            const newPractice: PracticeVideo = {
-              id: createYtClientId('prac'),
-              title: v.title,
-              date: inferDateFromText(
-                `${v.title} ${playlist.title}`,
-                v.publishedAt || playlist.publishedAt
-              ),
-              youtubeId: v.videoId,
-              youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
-              youtubePlaylistId: playlist.id,
-              tags: finalTags,
-              memo: v.description
-                ? v.description.slice(0, 180)
-                : `${playlist.title} から取り込み`,
-              moments: [],
-            };
-            nextPractices.unshift(newPractice);
-            addedPractices += 1;
-          });
+              const newPractice: PracticeVideo = {
+                id: createYtClientId('prac'),
+                title: v.title,
+                date: inferDateFromText(
+                  `${v.title} ${playlist.title}`,
+                  v.publishedAt || playlist.publishedAt
+                ),
+                youtubeId: v.videoId,
+                youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+                youtubePlaylistId: playlist.id,
+                tags: finalTags,
+                memo: v.description
+                  ? v.description.slice(0, 180)
+                  : `${playlist.title} から取り込み`,
+                moments: [],
+              };
+              nextPractices.unshift(newPractice);
+              addedPractices += 1;
+            });
+          }
         }
-      });
+      );
 
       return {
         ...prev,
@@ -647,6 +816,7 @@ export function YouTubeImportPanel({
         aiOrganizedMatches?: AiOrganizedMatchInput[];
       }> = [];
       let skippedCount = 0;
+      const knownGameVideoIds = collectRegisteredGameVideoIds(data.games);
 
       for (let i = 0; i < targets.length; i += 1) {
         const pl = targets[i];
@@ -681,12 +851,11 @@ export function YouTubeImportPanel({
           const existingGame = data.games.find(
             (g) => g.youtubePlaylistId === pl.id
           );
-          const existingVideoIds = new Set(
-            existingGame ? existingGame.videos.map((v) => v.youtubeId) : []
-          );
-          const targetVideos = existingGame
-            ? videos.filter((v) => !existingVideoIds.has(v.videoId))
-            : videos;
+          const targetVideos = videos.filter((v) => {
+            if (!v.videoId || knownGameVideoIds.has(v.videoId)) return false;
+            knownGameVideoIds.add(v.videoId);
+            return true;
+          });
           const baseCount = existingGame ? existingGame.videos.length : 0;
           const totalForInfer = baseCount + targetVideos.length;
 
@@ -887,6 +1056,209 @@ export function YouTubeImportPanel({
     setBulkError('');
   };
 
+  const loadSummaryPlaylist = async (
+    targetPlaylistId: string,
+    targetSinceDate: string
+  ) => {
+    setLoadingSummary(true);
+    setSummaryError('');
+    setSummaryProgress('再生リスト情報を読み込み中...');
+
+    try {
+      let stoppedEarly = false;
+      const [meta, videos] = await runWithBulkTokenRetry(async (token) => {
+        stoppedEarly = false;
+        const plMeta = await fetchPlaylistById(targetPlaylistId, token);
+        const fetched = await fetchPlaylistVideos(targetPlaylistId, token, {
+          maxPages: 15,
+          onPageFetched: ({ fetchedCount, hasMore }) => {
+            setSummaryProgress(
+              hasMore
+                ? `動画一覧を読み込み中... (${fetchedCount}本確認済み)`
+                : `動画一覧を読み込み中... (${fetchedCount}本)`
+            );
+          },
+          shouldStopAfterPage: (pageItems, allItems) => {
+            const stop = shouldStopFetchingOlderPages(
+              pageItems,
+              allItems,
+              targetSinceDate
+            );
+            if (stop) {
+              stoppedEarly = true;
+            }
+            return stop;
+          },
+        });
+        return [plMeta, fetched] as const;
+      });
+
+      const canonicalUrl = `https://www.youtube.com/playlist?list=${targetPlaylistId}`;
+      setSummaryPlaylist(meta);
+      setSummaryRawVideos(videos);
+      setSummaryFetchedSinceDate(targetSinceDate);
+      setSummaryStoppedEarly(stoppedEarly);
+
+      setSavedSummaryPlaylists((prev) => {
+        const nextItem: SavedSummaryPlaylist = {
+          id: targetPlaylistId,
+          url: canonicalUrl,
+          title: meta.title,
+          sinceDate: targetSinceDate,
+          lastCheckedAt: new Date().toISOString(),
+        };
+        const updated = [
+          nextItem,
+          ...prev.filter((item) => item.id !== targetPlaylistId),
+        ].slice(0, 10);
+        writeSavedSummaryPlaylists(updated);
+        return updated;
+      });
+
+      const initialGrouped = groupPlaylistVideosByDate(videos, {
+        sinceDate: targetSinceDate,
+        registeredVideoIds: collectRegisteredGameVideoIds(data.games),
+      });
+      const unregisteredDates = initialGrouped.groups
+        .filter((g) => !g.allRegistered)
+        .map((g) => g.date);
+      setSummarySelectedDates(unregisteredDates);
+      const defaultExpand =
+        unregisteredDates[0] ?? initialGrouped.groups[0]?.date;
+      setSummaryExpandedDates(defaultExpand ? [defaultExpand] : []);
+
+      if (initialGrouped.groups.length === 0) {
+        onNotify(
+          `${targetSinceDate ? `${targetSinceDate}以降の` : ''}動画は見つかりませんでした`,
+          'info'
+        );
+      } else if (unregisteredDates.length === 0) {
+        onNotify(
+          `「${meta.title}」の対象期間（${initialGrouped.groups.length}日分）はすべて登録済みです`,
+          'info'
+        );
+      } else {
+        onNotify(
+          `「${meta.title}」から ${initialGrouped.groups.length}日分（未登録 ${unregisteredDates.length}日分）を読み込みました`,
+          'success'
+        );
+      }
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'まとめ再生リストの読み込みに失敗しました。';
+      setSummaryError(msg);
+      if (msg.includes('YouTube Data API v3')) {
+        setShowApiGuide(true);
+      }
+    } finally {
+      setLoadingSummary(false);
+      setSummaryProgress('');
+    }
+  };
+
+  const handleLoadSummaryPlaylist = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const playlistId =
+      extractYouTubePlaylistId(summaryUrlInput) ??
+      extractAllYouTubePlaylistIds(summaryUrlInput)[0] ??
+      null;
+    if (!playlistId) {
+      onNotify('有効な再生リストのURLを入力してください', 'danger');
+      return;
+    }
+    await loadSummaryPlaylist(playlistId, summarySinceDate);
+  };
+
+  const handleCheckSavedSummary = async (item: SavedSummaryPlaylist) => {
+    const nextSince = item.sinceDate || DEFAULT_SUMMARY_SINCE_DATE;
+    setSummaryUrlInput(item.url);
+    setSummarySinceDate(nextSince);
+    await loadSummaryPlaylist(item.id, nextSince);
+  };
+
+  const handleRemoveSavedSummary = (playlistId: string) => {
+    setSavedSummaryPlaylists((prev) => {
+      const updated = prev.filter((item) => item.id !== playlistId);
+      writeSavedSummaryPlaylists(updated);
+      return updated;
+    });
+  };
+
+  const handleOpenPlaylistAsSummary = (pl: YouTubePlaylistSummary) => {
+    const url = `https://www.youtube.com/playlist?list=${pl.id}`;
+    setSummaryUrlInput(url);
+    summarySectionRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+    void loadSummaryPlaylist(pl.id, summarySinceDate);
+  };
+
+  const handleImportSummaryDates = () => {
+    if (!summaryPlaylist || !summaryGrouped) return;
+    const targetGroups = summaryGrouped.groups.filter(
+      (g) => !g.allRegistered && effectiveSelectedSummaryDates.includes(g.date)
+    );
+    if (targetGroups.length === 0) {
+      onNotify('未登録の動画がある日付を1つ以上選んでください', 'info');
+      return;
+    }
+
+    let importRes = {
+      addedGames: 0,
+      updatedGames: 0,
+      addedVideos: 0,
+      skippedDays: 0,
+      skippedDuplicateVideos: 0,
+      latestGameId: '',
+    };
+
+    onUpdateData((prev) => {
+      const merged = mergeSummaryDateGroupsIntoGames({
+        prevGames: prev.games,
+        groups: targetGroups,
+        playlistTitle: summaryPlaylist.title,
+        createId: createYtClientId,
+        getMatchesFn: getGameMatches,
+        syncGameFn: (g, m) => syncGameFromMatches(g, m, computeMatchSummary),
+      });
+      importRes = {
+        addedGames: merged.addedGames,
+        updatedGames: merged.updatedGames,
+        addedVideos: merged.addedVideos,
+        skippedDays: merged.skippedDays,
+        skippedDuplicateVideos: merged.skippedDuplicateVideos,
+        latestGameId: merged.latestGameId,
+      };
+      return {
+        ...prev,
+        games: merged.nextGames,
+      };
+    });
+
+    const importedDateSet = new Set(targetGroups.map((g) => g.date));
+    setSummarySelectedDates((prev) =>
+      prev.filter((d) => !importedDateSet.has(d))
+    );
+
+    if (importRes.latestGameId) {
+      onSelectActiveGame(importRes.latestGameId);
+    }
+
+    if (importRes.addedVideos === 0) {
+      onNotify('新しい動画はありませんでした（すべて登録済みです）', 'info');
+      return;
+    }
+
+    const parts: string[] = [];
+    if (importRes.addedGames > 0) parts.push(`新規試合日 ${importRes.addedGames}日`);
+    if (importRes.updatedGames > 0) parts.push(`既存日へ追加 ${importRes.updatedGames}日`);
+    parts.push(`動画 ${importRes.addedVideos}本`);
+    onNotify(`取り込み完了：${parts.join(' / ')}`, 'success');
+  };
+
   const handleAddSingleUrl = (e: React.FormEvent) => {
     e.preventDefault();
     const videoId = extractYouTubeVideoId(singleUrlInput);
@@ -897,29 +1269,55 @@ export function YouTubeImportPanel({
       return;
     }
 
+    const knownIds = collectAllRegisteredVideoIds(data);
+    if (videoId && knownIds.has(videoId)) {
+      onNotify('この動画はすでに登録されています', 'info');
+      return;
+    }
+    if (
+      !videoId &&
+      playlistId &&
+      singleKind === 'game' &&
+      data.games.some((g) => g.youtubePlaylistId === playlistId)
+    ) {
+      onNotify('この動画はすでに登録されています', 'info');
+      return;
+    }
+
     if (singleKind === 'game') {
       if (singleTargetGameId !== '__new__') {
         const targetExists = data.games.some((g) => g.id === singleTargetGameId);
         if (targetExists && videoId) {
-          onUpdateData((prev) => ({
-            ...prev,
-            games: prev.games.map((g) => {
-              if (g.id !== singleTargetGameId) return g;
-              const newClip: GameVideoClip = {
-                id: createYtClientId('clip'),
-                label: singleClipLabel.trim() || `動画${g.videos.length + 1}`,
-                ...(singleTitle.trim() ? { youtubeTitle: singleTitle.trim() } : {}),
-                youtubeId: videoId,
-                youtubeUrl: singleUrlInput.trim(),
-              };
-              const newMatches = autoGroupClipsIntoMatches([newClip], g.opponent);
-              return syncGameFromMatches(
-                g,
-                [...getGameMatches(g), ...newMatches],
-                computeMatchSummary
-              );
-            }),
-          }));
+          let duplicateFound = false;
+          onUpdateData((prev) => {
+            if (collectAllRegisteredVideoIds(prev).has(videoId)) {
+              duplicateFound = true;
+              return prev;
+            }
+            return {
+              ...prev,
+              games: prev.games.map((g) => {
+                if (g.id !== singleTargetGameId) return g;
+                const newClip: GameVideoClip = {
+                  id: createYtClientId('clip'),
+                  label: singleClipLabel.trim() || `動画${g.videos.length + 1}`,
+                  ...(singleTitle.trim() ? { youtubeTitle: singleTitle.trim() } : {}),
+                  youtubeId: videoId,
+                  youtubeUrl: singleUrlInput.trim(),
+                };
+                const newMatches = autoGroupClipsIntoMatches([newClip], g.opponent);
+                return syncGameFromMatches(
+                  g,
+                  [...getGameMatches(g), ...newMatches],
+                  computeMatchSummary
+                );
+              }),
+            };
+          });
+          if (duplicateFound) {
+            onNotify('この動画はすでに登録されています', 'info');
+            return;
+          }
           onSelectActiveGame(singleTargetGameId);
           onNotify('既存の試合に動画を追加しました', 'success');
           setSingleUrlInput('');
@@ -952,10 +1350,21 @@ export function YouTubeImportPanel({
         videos: clips,
         events: [],
       };
-      onUpdateData((prev) => ({
-        ...prev,
-        games: [newGame, ...prev.games],
-      }));
+      let duplicateFound = false;
+      onUpdateData((prev) => {
+        if (videoId && collectAllRegisteredVideoIds(prev).has(videoId)) {
+          duplicateFound = true;
+          return prev;
+        }
+        return {
+          ...prev,
+          games: [newGame, ...prev.games],
+        };
+      });
+      if (duplicateFound) {
+        onNotify('この動画はすでに登録されています', 'info');
+        return;
+      }
       onSelectActiveGame(newGame.id);
       onNotify('YouTube試合動画を追加しました', 'success');
     } else {
@@ -986,10 +1395,21 @@ export function YouTubeImportPanel({
             ]
           : [],
       };
-      onUpdateData((prev) => ({
-        ...prev,
-        practices: [newPractice, ...prev.practices],
-      }));
+      let duplicateFound = false;
+      onUpdateData((prev) => {
+        if (collectAllRegisteredVideoIds(prev).has(videoId)) {
+          duplicateFound = true;
+          return prev;
+        }
+        return {
+          ...prev,
+          practices: [newPractice, ...prev.practices],
+        };
+      });
+      if (duplicateFound) {
+        onNotify('この動画はすでに登録されています', 'info');
+        return;
+      }
       onNotify('練習動画を追加しました', 'success');
     }
 
@@ -1001,8 +1421,365 @@ export function YouTubeImportPanel({
     setSingleMomentLabel('');
   };
 
+  const totalSummaryIncludedVideos = summaryGrouped
+    ? summaryGrouped.groups.reduce((acc, g) => acc + g.totalCount, 0)
+    : 0;
+  const selectedSummaryVideoCount = summaryGrouped
+    ? summaryGrouped.groups
+        .filter(
+          (g) => !g.allRegistered && effectiveSelectedSummaryDates.includes(g.date)
+        )
+        .reduce((acc, g) => acc + g.unregisteredCount, 0)
+    : 0;
+
   return (
     <div className="portal-section-stack">
+      {/* ================================================= */}
+      {/* ⓪ まとめ再生リストから日付ごとに分けて取り込み    */}
+      {/* ================================================= */}
+      <section ref={summarySectionRef} className="portal-card">
+        <div className="block-title-row">
+          <Layers size={18} className="accent-icon" />
+          <h3>まとめ再生リストから日付ごとに取り込み</h3>
+          <span className="yt-summary-badge">複数日まとめ向け</span>
+        </div>
+        <p className="table-helper-text">
+          「【下級生】練習試合」のように複数日分が1つに入った再生リストから、指定した日付以降だけを日付ごとに分けて取り込めます。すでに登録済みの動画は自動で除外します。
+        </p>
+
+        {savedSummaryPlaylists.length > 0 && (
+          <div className="yt-saved-box">
+            <div className="yt-saved-header">
+              <span className="field-caption">
+                よく使う再生リスト（ワンタップで新着チェック）
+              </span>
+            </div>
+            <div className="yt-saved-list">
+              {savedSummaryPlaylists.map((item) => (
+                <div key={item.id} className="yt-saved-item">
+                  <div className="yt-saved-info">
+                    <span className="yt-saved-title">{item.title}</span>
+                    <span className="yt-saved-meta">
+                      開始日: {item.sinceDate || '全期間'}
+                      {item.lastCheckedAt
+                        ? ` ／ 最終チェック ${formatSavedCheckedAt(item.lastCheckedAt)}`
+                        : ''}
+                    </span>
+                  </div>
+                  <div className="yt-saved-actions">
+                    <button
+                      type="button"
+                      className="yt-saved-check-btn"
+                      disabled={loadingSummary}
+                      onClick={() => void handleCheckSavedSummary(item)}
+                    >
+                      <RefreshCw size={12} /> 新着チェック
+                    </button>
+                    <button
+                      type="button"
+                      className="yt-saved-remove-btn"
+                      aria-label={`${item.title}を履歴から削除`}
+                      onClick={() => handleRemoveSavedSummary(item.id)}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <form
+          onSubmit={(e) => void handleLoadSummaryPlaylist(e)}
+          className="portal-auth-form"
+        >
+          <label className="field-label">
+            <span>まとめ再生リストURL *</span>
+            <input
+              type="text"
+              className="portal-input"
+              value={summaryUrlInput}
+              onChange={(e) => setSummaryUrlInput(e.target.value)}
+              placeholder="https://www.youtube.com/playlist?list=..."
+            />
+          </label>
+
+          <div className="yt-since-row">
+            <label className="field-label">
+              <span>開始日フィルター（この日付以降の試合だけを取得）</span>
+              <input
+                type="date"
+                className="portal-input"
+                value={summarySinceDate}
+                onChange={(e) => setSummarySinceDate(e.target.value)}
+              />
+            </label>
+            <div className="yt-since-hint-row">
+              <span className="field-caption">
+                古い代の試合が混ざるのを防ぎます（空欄にすると全期間）
+              </span>
+              {summarySinceDate !== DEFAULT_SUMMARY_SINCE_DATE && (
+                <button
+                  type="button"
+                  className="yt-since-reset-btn"
+                  onClick={() => setSummarySinceDate(DEFAULT_SUMMARY_SINCE_DATE)}
+                >
+                  {DEFAULT_SUMMARY_SINCE_DATE} に戻す
+                </button>
+              )}
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            className="btn-accent btn-block"
+            disabled={loadingSummary || !summaryUrlInput.trim()}
+          >
+            <Calendar size={17} />
+            {loadingSummary
+              ? summaryProgress || '読み込み中...'
+              : '日付ごとに読み込む'}
+          </button>
+        </form>
+
+        {summaryError && (
+          <div className="portal-auth-error">
+            <AlertCircle size={16} />
+            <span>{summaryError}</span>
+          </div>
+        )}
+
+        {needsSummaryRefetchForEarlierDate && summaryPlaylist && (
+          <div className="yt-summary-warning">
+            <span>
+              開始日を以前より古い日付に変更しました。古い動画も読み込むには再読み込みしてください。
+            </span>
+            <button
+              type="button"
+              className="btn-soft-sm"
+              disabled={loadingSummary}
+              onClick={() =>
+                void loadSummaryPlaylist(summaryPlaylist.id, summarySinceDate)
+              }
+            >
+              <RefreshCw size={12} /> 再読み込み
+            </button>
+          </div>
+        )}
+
+        {summaryPlaylist && summaryGrouped && (
+          <div className="demo-playlist-box">
+            <div className="yt-summary-meta-bar">
+              <div className="yt-summary-meta-head">
+                <span className="yt-summary-meta-title">
+                  {summaryPlaylist.title}
+                </span>
+                {summaryStoppedEarly && (
+                  <span className="yt-summary-fast-badge">
+                    古い動画をスキップして高速取得
+                  </span>
+                )}
+              </div>
+              <div className="yt-summary-meta-stats">
+                対象 {summaryGrouped.groups.length}日分（動画{' '}
+                {totalSummaryIncludedVideos}本）
+                {summaryGrouped.filteredOutCount > 0
+                  ? ` ／ 開始日より前の古い動画 ${summaryGrouped.filteredOutCount}本を除外`
+                  : ''}
+              </div>
+            </div>
+
+            {summaryGrouped.groups.length === 0 ? (
+              <div className="empty-box">
+                指定した開始日（{summarySinceDate || '指定なし'}
+                ）以降の動画が見つかりませんでした。開始日を変更して再読み込みしてください。
+              </div>
+            ) : (
+              <>
+                <div className="row-between">
+                  <span className="field-caption">
+                    日付ごとの一覧（{effectiveSelectedSummaryDates.length}/
+                    {selectableSummaryDates.length}日選択中）
+                  </span>
+                  <div className="yt-select-actions">
+                    <button
+                      type="button"
+                      className="link-more"
+                      onClick={() =>
+                        setSummarySelectedDates(selectableSummaryDates)
+                      }
+                    >
+                      未登録日を全選択
+                    </button>
+                    <button
+                      type="button"
+                      className="link-more"
+                      onClick={() => setSummarySelectedDates([])}
+                    >
+                      解除
+                    </button>
+                  </div>
+                </div>
+
+                <div className="yt-date-group-list">
+                  {summaryGrouped.groups.map((group) => {
+                    const checked =
+                      !group.allRegistered &&
+                      effectiveSelectedSummaryDates.includes(group.date);
+                    const expanded = summaryExpandedDates.includes(group.date);
+                    const willAppendToExisting =
+                      !group.allRegistered && existingGameDates.has(group.date);
+
+                    return (
+                      <div
+                        key={group.date}
+                        className={`yt-date-card ${
+                          checked ? 'is-selected' : ''
+                        } ${group.allRegistered ? 'is-all-registered' : ''}`}
+                      >
+                        <div className="yt-date-card-head">
+                          <input
+                            type="checkbox"
+                            className="yt-date-check"
+                            checked={checked}
+                            disabled={group.allRegistered}
+                            aria-label={`${group.date}を選択`}
+                            onChange={() =>
+                              setSummarySelectedDates((prev) =>
+                                prev.includes(group.date)
+                                  ? prev.filter((d) => d !== group.date)
+                                  : [...prev, group.date]
+                              )
+                            }
+                          />
+                          <div className="yt-date-main">
+                            <div className="yt-date-top-row">
+                              <span className="yt-date-label">{group.date}</span>
+                              <span className="yt-date-counts">
+                                全{group.totalCount}本
+                              </span>
+                              {group.allRegistered ? (
+                                <span className="yt-synced-badge">登録済み</span>
+                              ) : (
+                                <>
+                                  <span className="yt-unregistered-badge">
+                                    未登録 {group.unregisteredCount}本
+                                  </span>
+                                  {willAppendToExisting && (
+                                    <span className="yt-append-badge">
+                                      既存日に追加
+                                    </span>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                            <div className="yt-date-opponents">
+                              vs {group.opponents.join('・')}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="yt-date-expand-btn"
+                            onClick={() =>
+                              setSummaryExpandedDates((prev) =>
+                                prev.includes(group.date)
+                                  ? prev.filter((d) => d !== group.date)
+                                  : [...prev, group.date]
+                              )
+                            }
+                          >
+                            <span>{expanded ? '閉じる' : '内訳'}</span>
+                            {expanded ? (
+                              <ChevronUp size={13} />
+                            ) : (
+                              <ChevronDown size={13} />
+                            )}
+                          </button>
+                        </div>
+
+                        {expanded && (
+                          <div className="yt-date-video-list">
+                            {group.entries.map((entry, idx) => (
+                              <div
+                                key={entry.video.videoId}
+                                className={`yt-date-video-row ${
+                                  entry.alreadyRegistered ? 'is-registered' : ''
+                                }`}
+                              >
+                                <span className="yt-video-order-num">
+                                  {idx + 1}.
+                                </span>
+                                <span
+                                  className={`yt-video-status-dot ${
+                                    entry.alreadyRegistered
+                                      ? 'is-registered'
+                                      : ''
+                                  }`}
+                                />
+                                <div className="yt-video-info">
+                                  <div className="yt-video-parsed-row">
+                                    {entry.parsed.teamUnit && (
+                                      <span
+                                        className={`yt-unit-chip ${
+                                          entry.parsed.teamUnit === 'A'
+                                            ? 'is-unit-a'
+                                            : entry.parsed.teamUnit === 'B'
+                                              ? 'is-unit-b'
+                                              : ''
+                                        }`}
+                                      >
+                                        {entry.parsed.teamUnit}
+                                      </span>
+                                    )}
+                                    <span className="yt-video-parsed-name">
+                                      vs {entry.parsed.opponent}
+                                      {entry.parsed.gameNumber !== null
+                                        ? `（${entry.parsed.gameNumber}試合目）`
+                                        : ''}
+                                      {entry.parsed.quarterLabel
+                                        ? ` ${entry.parsed.quarterLabel}`
+                                        : ''}
+                                    </span>
+                                  </div>
+                                  <div className="yt-video-raw-title">
+                                    {entry.video.title}
+                                  </div>
+                                </div>
+                                <span
+                                  className={`yt-video-state-label ${
+                                    entry.alreadyRegistered
+                                      ? 'is-registered'
+                                      : ''
+                                  }`}
+                                >
+                                  {entry.alreadyRegistered ? '登録済み' : '未登録'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  className="btn-accent btn-block"
+                  disabled={effectiveSelectedSummaryDates.length === 0}
+                  onClick={handleImportSummaryDates}
+                >
+                  {effectiveSelectedSummaryDates.length > 0
+                    ? `選択した ${effectiveSelectedSummaryDates.length} 日分（未登録 ${selectedSummaryVideoCount}本）を取り込む`
+                    : '取り込める未登録の日付がありません'}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </section>
+
       {/* ================================================= */}
       {/* ① YouTubeアカウント連携（全再生リスト一括取り込み） */}
       {/* ================================================= */}
@@ -1110,6 +1887,7 @@ export function YouTubeImportPanel({
             onChangeKind={(id, kind) =>
               setKindOverrides((prev) => ({ ...prev, [id]: kind }))
             }
+            onOpenAsSummary={handleOpenPlaylistAsSummary}
             onImport={() => void handleBatchImportSelected()}
           />
         )}
@@ -1206,6 +1984,7 @@ export function YouTubeImportPanel({
             onChangeKind={(id, kind) =>
               setBulkKindOverrides((prev) => ({ ...prev, [id]: kind }))
             }
+            onOpenAsSummary={handleOpenPlaylistAsSummary}
             onImport={() => void handleImportSelectedBulkPlaylists()}
           >
             {bulkPlaylists.some(
