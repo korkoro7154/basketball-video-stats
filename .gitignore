@@ -29,3 +29,8 @@ dist-ssr
 
 # Local sample screenshots (contains student names; never commit)
 スクショ例/
+都立三原/
+
+# Parallel multi-chat development (local only)
+.worktrees/
+PARALLEL_BOARD.md
