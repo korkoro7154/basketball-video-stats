@@ -227,14 +227,30 @@ export async function fetchPlaylistsByIds(
     .filter((pl): pl is YouTubePlaylistSummary => Boolean(pl));
 }
 
+export interface FetchPlaylistVideosOptions {
+  maxPages?: number;
+  shouldStopAfterPage?: (
+    pageItems: YouTubePlaylistVideoItem[],
+    allItemsSoFar: YouTubePlaylistVideoItem[],
+    pageIndex: number
+  ) => boolean;
+  onPageFetched?: (info: {
+    pageIndex: number;
+    fetchedCount: number;
+    hasMore: boolean;
+  }) => void;
+}
+
 export async function fetchPlaylistVideos(
   playlistId: string,
-  accessToken?: string
+  accessToken?: string,
+  options?: FetchPlaylistVideosOptions
 ): Promise<YouTubePlaylistVideoItem[]> {
   const items: YouTubePlaylistVideoItem[] = [];
+  const maxPages = Math.max(1, options?.maxPages ?? 4);
   let pageToken = '';
 
-  for (let page = 0; page < 4; page += 1) {
+  for (let page = 0; page < maxPages; page += 1) {
     const tokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
     const url = `${YT_API_BASE}/playlistItems?part=snippet,contentDetails&playlistId=${encodeURIComponent(
       playlistId
@@ -244,6 +260,7 @@ export async function fetchPlaylistVideos(
       nextPageToken?: string;
     }>(url, accessToken);
 
+    const pageItems: YouTubePlaylistVideoItem[] = [];
     (json.items ?? []).forEach((raw) => {
       const videoId =
         raw.contentDetails?.videoId ?? raw.snippet?.resourceId?.videoId ?? '';
@@ -255,18 +272,29 @@ export async function fetchPlaylistVideos(
         raw.snippet?.thumbnails?.medium?.url ??
         raw.snippet?.thumbnails?.default?.url ??
         null;
-      items.push({
+      pageItems.push({
         videoId,
         title: title || '動画',
         description: raw.snippet?.description ?? '',
         publishedAt:
           raw.contentDetails?.videoPublishedAt ?? raw.snippet?.publishedAt ?? '',
-        position: raw.snippet?.position ?? items.length,
+        position: raw.snippet?.position ?? items.length + pageItems.length,
         thumbnailUrl: thumb,
       });
     });
 
+    items.push(...pageItems);
+    const hasMore = Boolean(json.nextPageToken);
+    options?.onPageFetched?.({
+      pageIndex: page,
+      fetchedCount: items.length,
+      hasMore,
+    });
+
     if (!json.nextPageToken) break;
+    if (options?.shouldStopAfterPage?.(pageItems, items, page)) {
+      break;
+    }
     pageToken = json.nextPageToken;
   }
 
