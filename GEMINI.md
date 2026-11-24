@@ -13,8 +13,9 @@
 
 ## 2. 標準ワークフロー（4手順）
 
-1. **状況確認**
+1. **状況確認・仕様把握**
    - 作業前に `node scripts/parallel.mjs status` を実行し、`PARALLEL_BOARD.md` で他のチャットが作業中のエリア・`shared` ロックを確認する。
+   - **実装・画面改修・設計相談の前に必ず `PORTAL_SPEC.md` を読み、現在の最新仕様（3層試合管理・2段階ロック・管理3タブ構成・AI処理等）を把握してから進める。**
 2. **作業部屋の確保**
    - `node scripts/parallel.mjs claim --task "<作業内容>" --area "<エリア1,エリア2>"` を実行する（共通ファイルも触る場合は `--shared` を付ける）。
    - 以降は必ずコマンドが表示した **作業部屋の絶対パス（`.worktrees/<room>/...`）配下のみ** を編集し、コマンドやビルドもその部屋をカレントディレクトリにして実行する。
@@ -23,7 +24,8 @@
    - ローカル確認サーバーを起動する場合は、部屋ごとの専用ポートを使う（`room-a: 5174` / `room-b: 5175` / `room-c: 5176`、`main` の `5173` は使わない）。
    - 例：`npm run dev -- --port 5174`
    - Mac（Intel MacBook Pro / 16GB）への負荷を防ぐため、確認が終わったら起動したサーバーを**必ず停止**する。
-4. **統合（または解放）**
+4. **仕様書反映・統合（または解放）**
+   - 画面構成・データ構造・主要機能・AI仕様など**大きな仕様変更を行った場合は、作業完了時に `PORTAL_SPEC.md` も最新内容へ更新する**（変更対象に `docs` エリアを含めるか、完了後に更新する）。
    - 作業部屋内で `git add`（対象ファイルのみ）・`git commit` を行い、`node scripts/parallel.mjs check <room>` で違反がないことを確認する。
    - 親フォルダ（または作業部屋）から `node scripts/parallel.mjs merge <room> --summary "<完了メモ>"` を実行し、`main` 同期と `npm run build` を通過させてローカル `main` へ統合する。
    - 編集を取りやめた場合は `node scripts/parallel.mjs release <room> --reason "<理由>"` で予約だけを解放する。
