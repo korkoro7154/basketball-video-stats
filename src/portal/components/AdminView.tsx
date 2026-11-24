@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import {
   ArrowRightLeft,
   Check,
+  ChevronDown,
+  ChevronUp,
+  ClipboardPaste,
   Clock,
   Lock,
   Pause,
@@ -44,6 +47,10 @@ import {
   syncGameFromMatches,
 } from '../utils/matches';
 import { formatSeconds } from '../utils/youtube';
+import {
+  mergeBulkRosterPlayers,
+  parseBulkRosterLines,
+} from '../utils/roster';
 import { YouTubeImportPanel } from './YouTubeImportPanel';
 import { StatsScreenshotImporter } from './StatsScreenshotImporter';
 import type { OcrSaveBatchPayload } from './StatsScreenshotImporter';
@@ -58,7 +65,7 @@ interface AdminViewProps {
   onOpenGameDetail: (gameId: string) => void;
 }
 
-type AdminSubTab = 'stats' | 'youtube' | 'roster' | 'settings';
+type AdminSubTab = 'stats' | 'youtube' | 'settings';
 
 const STAT_BUTTON_LIST: StatActionType[] = [
   '2P_MADE',
@@ -91,7 +98,7 @@ function EmptyRosterNotice({ onOpenRoster }: { onOpenRoster: () => void }) {
   return (
     <div className="admin-warn-note">
       <span>
-        まだ部員が登録されていません。「選手名簿」タブから部員を追加すると個人別の記録ができます。
+        まだ部員が登録されていません。「管理・設定」タブの選手名簿から部員を追加すると個人別の記録ができます。
       </span>
       <div className="top-gap">
         <button type="button" className="btn-soft-sm" onClick={onOpenRoster}>
@@ -139,6 +146,10 @@ export function AdminView({
   const [newGameCategory, setNewGameCategory] = useState<GameCategory>('練習試合');
 
   // 選手名簿・許可メンバー用ステート
+  const [bulkRosterText, setBulkRosterText] = useState('');
+  const [showRosterSection, setShowRosterSection] = useState(false);
+  const [showManageDataSection, setShowManageDataSection] = useState(false);
+  const [showOtherSettingsSection, setShowOtherSettingsSection] = useState(false);
   const [newPlayerNum, setNewPlayerNum] = useState('');
   const [newPlayerName, setNewPlayerName] = useState('');
   const [newPlayerPos, setNewPlayerPos] = useState('G');
@@ -750,6 +761,37 @@ export function AdminView({
     onNotify(`#${created.number} ${created.name} を追加しました`, 'success');
   };
 
+  const parsedBulkEntries = parseBulkRosterLines(bulkRosterText);
+
+  const handleBulkAddPlayers = (e: React.FormEvent) => {
+    e.preventDefault();
+    const entries = parseBulkRosterLines(bulkRosterText);
+    if (entries.length === 0) {
+      onNotify('「背番号 名前」の形式で1行ずつ入力してください', 'danger');
+      return;
+    }
+
+    let summary = { addedCount: 0, updatedCount: 0, skippedCount: 0 };
+    onUpdateData((prev) => {
+      const merged = mergeBulkRosterPlayers(prev.players, entries, createClientId);
+      summary = {
+        addedCount: merged.addedCount,
+        updatedCount: merged.updatedCount,
+        skippedCount: merged.skippedCount,
+      };
+      return {
+        ...prev,
+        players: merged.players,
+      };
+    });
+
+    setBulkRosterText('');
+    onNotify(
+      `名簿を反映しました（新規 ${summary.addedCount}名 / 更新 ${summary.updatedCount}名 / 登録済み ${summary.skippedCount}名）`,
+      'success'
+    );
+  };
+
   const handleAddAllowedEmail = (e: React.FormEvent) => {
     e.preventDefault();
     const email = newAllowedEmail.trim().toLowerCase();
@@ -916,8 +958,7 @@ export function AdminView({
         {[
           { id: 'stats' as const, label: 'スタッツ記録' },
           { id: 'youtube' as const, label: 'YouTube登録' },
-          { id: 'roster' as const, label: '選手名簿' },
-          { id: 'settings' as const, label: '設定' },
+          { id: 'settings' as const, label: '管理・設定' },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -1262,7 +1303,12 @@ export function AdminView({
                   <span className="step-num">1</span> 誰のプレイか選ぶ
                 </div>
                 {data.players.length === 0 && (
-                  <EmptyRosterNotice onOpenRoster={() => setSubTab('roster')} />
+                  <EmptyRosterNotice
+                    onOpenRoster={() => {
+                      setSubTab('settings');
+                      setShowRosterSection(true);
+                    }}
+                  />
                 )}
                 <div className="player-pick-grid">
                   {data.players.map((p) => (
@@ -1423,7 +1469,12 @@ export function AdminView({
               </p>
 
               {data.players.length === 0 ? (
-                <EmptyRosterNotice onOpenRoster={() => setSubTab('roster')} />
+                <EmptyRosterNotice
+                  onOpenRoster={() => {
+                    setSubTab('settings');
+                    setShowRosterSection(true);
+                  }}
+                />
               ) : (
                 <div className="batch-player-list">
                   {data.players.map((p) => {
@@ -1522,95 +1573,11 @@ export function AdminView({
       )}
 
       {/* ================================================= */}
-      {/* ③ 選手名簿                                        */}
+      {/* ③ 管理・設定（メンバー許可・名簿・削除・基本設定）  */}
       {/* ================================================= */}
-      {subTab === 'roster' && (
+      {subTab === 'settings' && (
         <div className="portal-section-stack">
-          <section className="portal-card">
-            <div className="block-title-row">
-              <UserPlus size={18} className="accent-icon" />
-              <h3>部員を追加</h3>
-            </div>
-            <form onSubmit={handleAddPlayer} className="portal-auth-form">
-              <div className="roster-form-row">
-                <input
-                  type="text"
-                  className="portal-input num-input"
-                  value={newPlayerNum}
-                  onChange={(e) => setNewPlayerNum(e.target.value)}
-                  placeholder="番号"
-                  maxLength={3}
-                />
-                <input
-                  type="text"
-                  className="portal-input flex-1"
-                  value={newPlayerName}
-                  onChange={(e) => setNewPlayerName(e.target.value)}
-                  placeholder="選手名（例：山田 太郎）"
-                />
-              </div>
-              <div className="two-col-row">
-                <select
-                  className="portal-select"
-                  value={newPlayerPos}
-                  onChange={(e) => setNewPlayerPos(e.target.value)}
-                >
-                  <option value="PG">PG</option>
-                  <option value="SG">SG</option>
-                  <option value="SF">SF</option>
-                  <option value="PF">PF</option>
-                  <option value="C">C</option>
-                  <option value="G">G</option>
-                  <option value="F">F</option>
-                </select>
-                <select
-                  className="portal-select"
-                  value={newPlayerGrade}
-                  onChange={(e) => setNewPlayerGrade(e.target.value)}
-                >
-                  <option value="3年">3年</option>
-                  <option value="2年">2年</option>
-                  <option value="1年">1年</option>
-                </select>
-              </div>
-              <button type="submit" className="btn-accent btn-block">
-                <Plus size={17} /> 名簿に追加する
-              </button>
-            </form>
-          </section>
-
-          <section className="portal-card">
-            <h3 className="block-subtitle">登録済み部員（{data.players.length}名）</h3>
-            <div className="roster-list">
-              {[...data.players]
-                .sort(
-                  (a, b) =>
-                    (parseInt(a.number, 10) || 999) - (parseInt(b.number, 10) || 999)
-                )
-                .map((player) => (
-                  <div key={player.id} className="roster-row">
-                    <div className="roster-left">
-                      <span className="roster-badge">#{player.number}</span>
-                      <div>
-                        <div className="roster-name">{player.name}</div>
-                        <div className="roster-meta">
-                          {player.position || '-'} / {player.grade || '-'}
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="btn-icon-danger"
-                      onClick={() => handleRemovePlayer(player)}
-                      aria-label={`${player.name}を削除`}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                ))}
-            </div>
-          </section>
-
+          {/* Card 1: ログイン許可メンバー（常に展開） */}
           <section className="portal-card">
             <div className="block-title-row">
               <ShieldCheck size={18} className="accent-icon" />
@@ -1672,130 +1639,317 @@ export function AdminView({
               })}
             </div>
           </section>
-        </div>
-      )}
 
-      {/* ================================================= */}
-      {/* ④ 設定                                            */}
-      {/* ================================================= */}
-      {subTab === 'settings' && (
-        <div className="portal-section-stack">
+          {/* Card 2: 選手名簿（折りたたみ：一括コピペ＋1人ずつ＋一覧） */}
           <section className="portal-card">
-            <h3 className="block-subtitle">チーム名の変更</h3>
-            <form onSubmit={handleSaveTeamName} className="inline-input-btn">
-              <input
-                type="text"
-                className="portal-input flex-1"
-                value={teamNameInput}
-                onChange={(e) => setTeamNameInput(e.target.value)}
-              />
-              <button type="submit" className="btn-accent btn-sm">
-                <Save size={15} /> 保存
-              </button>
-            </form>
-          </section>
-
-          <section className="portal-card">
-            <h3 className="block-subtitle">練習タグの追加</h3>
-            <form onSubmit={handleAddTag} className="inline-input-btn">
-              <input
-                type="text"
-                className="portal-input flex-1"
-                value={newTagInput}
-                onChange={(e) => setNewTagInput(e.target.value)}
-                placeholder="例：#ゾーンプレス"
-              />
-              <button type="submit" className="btn-accent btn-sm">
-                <Plus size={15} /> 追加
-              </button>
-            </form>
-            <div className="chip-wrap top-gap">
-              {data.practiceTags.map((t) => (
-                <span key={t} className="tag-pill">
-                  {t}
+            <button
+              type="button"
+              className="ocr-toggle-table-btn"
+              onClick={() => setShowRosterSection((v) => !v)}
+            >
+              <span className="match-org-toggle-left">
+                <UserPlus size={15} className="accent-icon" />
+                <span>
+                  選手名簿（登録済み {data.players.length}名・一括追加 / 編集）
                 </span>
-              ))}
-            </div>
-          </section>
+              </span>
+              {showRosterSection ? (
+                <ChevronUp size={16} />
+              ) : (
+                <ChevronDown size={16} />
+              )}
+            </button>
 
-          <section className="portal-card">
-            <h3 className="block-subtitle">管理者PINの変更（4桁数字）</h3>
-            <form onSubmit={handleChangePin} className="inline-input-btn">
-              <input
-                type="password"
-                inputMode="numeric"
-                maxLength={4}
-                className="portal-input flex-1"
-                value={newPinInput}
-                onChange={(e) => setNewPinInput(e.target.value)}
-                placeholder="新しい4桁の数字"
-              />
-              <button type="submit" className="btn-accent btn-sm">
-                変更
-              </button>
-            </form>
-          </section>
-
-          <section className="portal-card">
-            <h3 className="block-subtitle">登録済み 試合・練習の削除</h3>
-            <p className="table-helper-text">
-              不要になった試合や練習動画を1件ずつ削除できます。
-            </p>
-
-            {data.games.length === 0 && data.practices.length === 0 ? (
-              <div className="empty-box">登録済みの試合・練習はまだありません</div>
+            {!showRosterSection ? (
+              <p className="card-date top-gap">
+                まとめてコピペ登録や個別追加・編集をする時だけここから開けます
+              </p>
             ) : (
-              <div className="portal-section-stack">
-                {[
-                  {
-                    key: 'games',
-                    caption: `試合（${data.games.length}件）`,
-                    rows: [...data.games]
-                      .sort((a, b) => b.date.localeCompare(a.date))
-                      .map((game) => ({
-                        id: game.id,
-                        primary: `${game.date} vs ${game.opponent}`,
-                        secondary: game.title,
-                        ariaLabel: `${game.title}を削除`,
-                        onRemove: () => handleRemoveGame(game),
-                      })),
-                  },
-                  {
-                    key: 'practices',
-                    caption: `練習動画（${data.practices.length}件）`,
-                    rows: [...data.practices]
-                      .sort((a, b) => b.date.localeCompare(a.date))
-                      .map((practice) => ({
-                        id: practice.id,
-                        primary: practice.title,
-                        secondary: practice.date,
-                        ariaLabel: `${practice.title}を削除`,
-                        onRemove: () => handleRemovePractice(practice),
-                      })),
-                  },
-                ]
-                  .filter((section) => section.rows.length > 0)
-                  .map((section) => (
-                    <div key={section.key} className="roster-list">
-                      <div className="field-caption">{section.caption}</div>
-                      {section.rows.map((row) => (
-                        <div key={row.id} className="roster-row">
-                          <div className="allowed-email-info">
-                            <span className="roster-name">{row.primary}</span>
-                            <span className="roster-meta">{row.secondary}</span>
+              <div className="match-org-body">
+                <form
+                  onSubmit={handleBulkAddPlayers}
+                  className="portal-auth-form"
+                >
+                  <div className="block-title-row">
+                    <ClipboardPaste size={16} className="accent-icon" />
+                    <h4>複数人まとめて一括追加</h4>
+                  </div>
+                  <p className="table-helper-text">
+                    「背番号 名前」を1行ずつ貼り付けると全員まとめて登録できます（すでにある名前や番号は記録を引き継いだまま重複せず整理されます）。
+                  </p>
+                  <textarea
+                    className="portal-textarea"
+                    rows={6}
+                    value={bulkRosterText}
+                    onChange={(e) => setBulkRosterText(e.target.value)}
+                    placeholder={'0 山田 太郎\n1 佐藤 次郎'}
+                  />
+                  <div className="row-between">
+                    <span className="field-caption">
+                      検出：{parsedBulkEntries.length}名
+                    </span>
+                    <button
+                      type="submit"
+                      className="btn-accent btn-sm"
+                      disabled={parsedBulkEntries.length === 0}
+                    >
+                      <Plus size={15} /> まとめて名簿に追加する
+                    </button>
+                  </div>
+                </form>
+
+                <form
+                  onSubmit={handleAddPlayer}
+                  className="inline-subform portal-auth-form"
+                >
+                  <span className="field-caption">1人ずつ追加</span>
+                  <div className="roster-form-row">
+                    <input
+                      type="text"
+                      className="portal-input num-input"
+                      value={newPlayerNum}
+                      onChange={(e) => setNewPlayerNum(e.target.value)}
+                      placeholder="番号"
+                      maxLength={3}
+                    />
+                    <input
+                      type="text"
+                      className="portal-input flex-1"
+                      value={newPlayerName}
+                      onChange={(e) => setNewPlayerName(e.target.value)}
+                      placeholder="選手名（例：山田 太郎）"
+                    />
+                  </div>
+                  <div className="two-col-row">
+                    <select
+                      className="portal-select"
+                      value={newPlayerPos}
+                      onChange={(e) => setNewPlayerPos(e.target.value)}
+                    >
+                      <option value="PG">PG</option>
+                      <option value="SG">SG</option>
+                      <option value="SF">SF</option>
+                      <option value="PF">PF</option>
+                      <option value="C">C</option>
+                      <option value="G">G</option>
+                      <option value="F">F</option>
+                    </select>
+                    <select
+                      className="portal-select"
+                      value={newPlayerGrade}
+                      onChange={(e) => setNewPlayerGrade(e.target.value)}
+                    >
+                      <option value="3年">3年</option>
+                      <option value="2年">2年</option>
+                      <option value="1年">1年</option>
+                    </select>
+                  </div>
+                  <button type="submit" className="btn-soft-sm">
+                    <Plus size={15} /> 1名を追加する
+                  </button>
+                </form>
+
+                <div className="roster-list">
+                  <div className="field-caption">
+                    登録済み部員（{data.players.length}名）
+                  </div>
+                  {[...data.players]
+                    .sort(
+                      (a, b) =>
+                        (parseInt(a.number, 10) || 999) -
+                        (parseInt(b.number, 10) || 999)
+                    )
+                    .map((player) => (
+                      <div key={player.id} className="roster-row">
+                        <div className="roster-left">
+                          <span className="roster-badge">#{player.number}</span>
+                          <div>
+                            <div className="roster-name">{player.name}</div>
+                            {(player.position || player.grade) && (
+                              <div className="roster-meta">
+                                {[player.position, player.grade]
+                                  .filter(Boolean)
+                                  .join(' / ')}
+                              </div>
+                            )}
                           </div>
-                          <button
-                            type="button"
-                            className="btn-icon-danger"
-                            onClick={row.onRemove}
-                            aria-label={row.ariaLabel}
-                          >
-                            <Trash2 size={16} />
-                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-icon-danger"
+                          onClick={() => handleRemovePlayer(player)}
+                          aria-label={`${player.name}を削除`}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* Card 3: 登録済み 試合・練習の削除（折りたたみ） */}
+          <section className="portal-card">
+            <button
+              type="button"
+              className="ocr-toggle-table-btn"
+              onClick={() => setShowManageDataSection((v) => !v)}
+            >
+              <span className="match-org-toggle-left">
+                <Trash2 size={15} className="accent-icon" />
+                <span>
+                  登録済み 試合・練習の削除（試合{data.games.length}件・練習
+                  {data.practices.length}件）
+                </span>
+              </span>
+              {showManageDataSection ? (
+                <ChevronUp size={16} />
+              ) : (
+                <ChevronDown size={16} />
+              )}
+            </button>
+
+            {showManageDataSection && (
+              <div className="match-org-body">
+                <p className="table-helper-text">
+                  不要になった試合や練習動画を1件ずつ削除できます。
+                </p>
+
+                {data.games.length === 0 && data.practices.length === 0 ? (
+                  <div className="empty-box">登録済みの試合・練習はまだありません</div>
+                ) : (
+                  <div className="portal-section-stack">
+                    {[
+                      {
+                        key: 'games',
+                        caption: `試合（${data.games.length}件）`,
+                        rows: [...data.games]
+                          .sort((a, b) => b.date.localeCompare(a.date))
+                          .map((game) => ({
+                            id: game.id,
+                            primary: `${game.date} vs ${game.opponent}`,
+                            secondary: game.title,
+                            ariaLabel: `${game.title}を削除`,
+                            onRemove: () => handleRemoveGame(game),
+                          })),
+                      },
+                      {
+                        key: 'practices',
+                        caption: `練習動画（${data.practices.length}件）`,
+                        rows: [...data.practices]
+                          .sort((a, b) => b.date.localeCompare(a.date))
+                          .map((practice) => ({
+                            id: practice.id,
+                            primary: practice.title,
+                            secondary: practice.date,
+                            ariaLabel: `${practice.title}を削除`,
+                            onRemove: () => handleRemovePractice(practice),
+                          })),
+                      },
+                    ]
+                      .filter((section) => section.rows.length > 0)
+                      .map((section) => (
+                        <div key={section.key} className="roster-list">
+                          <div className="field-caption">{section.caption}</div>
+                          {section.rows.map((row) => (
+                            <div key={row.id} className="roster-row">
+                              <div className="allowed-email-info">
+                                <span className="roster-name">{row.primary}</span>
+                                <span className="roster-meta">{row.secondary}</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="btn-icon-danger"
+                                onClick={row.onRemove}
+                                aria-label={row.ariaLabel}
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          ))}
                         </div>
                       ))}
-                    </div>
-                  ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Card 4: その他設定（チーム名・管理者PIN・練習タグ・折りたたみ） */}
+          <section className="portal-card">
+            <button
+              type="button"
+              className="ocr-toggle-table-btn"
+              onClick={() => setShowOtherSettingsSection((v) => !v)}
+            >
+              <span className="match-org-toggle-left">
+                <span>⚙️ その他設定（チーム名・管理者PIN・練習タグ）</span>
+              </span>
+              {showOtherSettingsSection ? (
+                <ChevronUp size={16} />
+              ) : (
+                <ChevronDown size={16} />
+              )}
+            </button>
+
+            {showOtherSettingsSection && (
+              <div className="match-org-body">
+                <div>
+                  <h3 className="block-subtitle">チーム名の変更</h3>
+                  <form onSubmit={handleSaveTeamName} className="inline-input-btn">
+                    <input
+                      type="text"
+                      className="portal-input flex-1"
+                      value={teamNameInput}
+                      onChange={(e) => setTeamNameInput(e.target.value)}
+                    />
+                    <button type="submit" className="btn-accent btn-sm">
+                      <Save size={15} /> 保存
+                    </button>
+                  </form>
+                </div>
+
+                <div>
+                  <h3 className="block-subtitle">練習タグの追加</h3>
+                  <form onSubmit={handleAddTag} className="inline-input-btn">
+                    <input
+                      type="text"
+                      className="portal-input flex-1"
+                      value={newTagInput}
+                      onChange={(e) => setNewTagInput(e.target.value)}
+                      placeholder="例：#ゾーンプレス"
+                    />
+                    <button type="submit" className="btn-accent btn-sm">
+                      <Plus size={15} /> 追加
+                    </button>
+                  </form>
+                  <div className="chip-wrap top-gap">
+                    {data.practiceTags.map((t) => (
+                      <span key={t} className="tag-pill">
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="block-subtitle">管理者PINの変更（4桁数字）</h3>
+                  <form onSubmit={handleChangePin} className="inline-input-btn">
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      maxLength={4}
+                      className="portal-input flex-1"
+                      value={newPinInput}
+                      onChange={(e) => setNewPinInput(e.target.value)}
+                      placeholder="新しい4桁の数字"
+                    />
+                    <button type="submit" className="btn-accent btn-sm">
+                      変更
+                    </button>
+                  </form>
+                </div>
               </div>
             )}
           </section>
