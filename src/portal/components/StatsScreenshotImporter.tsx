@@ -5,64 +5,77 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Layers,
   Loader2,
+  Plus,
   RotateCcw,
   Save,
+  Upload,
   X,
 } from 'lucide-react';
 import type { GameMatch, GameRecord, Player, TeamUnit } from '../types';
 import { formatMatchDisplayTitle, getGameMatches } from '../utils/matches';
 import {
+  extractDateAndOpponentHintsFromFileName,
+  findBestMatchingGameForItem,
+  hydrateOcrPlayersWithRoster,
+  mergeEditableOcrPlayerRows,
+  normalizeJerseyNumber,
+  resolvePlayerFromRoster,
+} from '../utils/stats';
+import type {
+  EditableOcrPlayer,
+  OcrMergeMode,
+  OcrSaveBatchItem,
+  OcrSaveBatchPayload,
+} from '../utils/stats';
+import {
   prepareScreenshotForOcr,
   sendPreparedScreenshotToOcr,
 } from '../services/statsOcrApi';
 import type {
+  OcrSourceKind,
   ParsedStatsResult,
   PreparedScreenshot,
 } from '../services/statsOcrApi';
+import './StatsScreenshotImporter.css';
 
-export interface EditableOcrPlayer {
-  id: string;
-  reportedPts: number;
-  number: string;
-  name: string;
-  twoPm: number;
-  twoPa: number;
-  threePm: number;
-  threePa: number;
-  ftm: number;
-  fta: number;
-  oreb: number;
-  dreb: number;
-  ast: number;
-  stl: number;
-  blk: number;
-  to: number;
-  pf: number;
-}
-
-export interface OcrSaveBatchPayload {
-  items: Array<{
-    targetMatchId: string | '__new__';
-    awayTeamName: string;
-    teamUnit: TeamUnit;
-    homeScore: number;
-    awayScore: number;
-    rows: EditableOcrPlayer[];
-  }>;
-  autoAddMissingPlayers: boolean;
-}
+export type {
+  EditableOcrPlayer,
+  OcrMergeMode,
+  OcrSaveBatchItem,
+  OcrSaveBatchPayload,
+};
 
 interface PreviewOcrItem {
   itemId: string;
   fileName: string;
   thumbDataUrl?: string;
+  targetGameId: string;
   targetMatchId: string | '__new__';
+  mergeMode: OcrMergeMode;
+  imageType: ParsedStatsResult['imageType'];
+  sourceKind: OcrSourceKind;
+  quarterLabel: string;
+  detectedMmDd: string;
+  autoMatchedGame: boolean;
   awayTeamName: string;
   teamUnit: TeamUnit;
   homeScore: number;
   awayScore: number;
   rows: EditableOcrPlayer[];
+}
+
+interface IncomingImageEntry {
+  file: File;
+  pathHint: string;
+}
+
+interface SavedGameSummary {
+  id: string;
+  title: string;
+  count: number;
+  matchSummary: string;
 }
 
 interface StatsScreenshotImporterProps {
@@ -75,7 +88,7 @@ interface StatsScreenshotImporterProps {
   onApplyParsedStats: (payload: OcrSaveBatchPayload) => Promise<boolean>;
   onChangeTargetGame: (gameId: string) => void;
   onNotify: (message: string, tone?: 'success' | 'info' | 'danger') => void;
-  onOpenGameDetail: () => void;
+  onOpenGameDetail: (gameId?: string) => void;
 }
 
 type NumericFieldKey =
@@ -109,6 +122,23 @@ const NUMERIC_COLUMNS: Array<{ key: NumericFieldKey; label: string }> = [
   { key: 'pf', label: 'PF' },
 ];
 
+interface WebkitEntryLike {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  fullPath?: string;
+  file?: (
+    successCallback: (file: File) => void,
+    errorCallback?: (err: unknown) => void
+  ) => void;
+  createReader?: () => {
+    readEntries: (
+      successCallback: (entries: WebkitEntryLike[]) => void,
+      errorCallback?: (err: unknown) => void
+    ) => void;
+  };
+}
+
 let ocrSeq = 0;
 
 function createOcrId(prefix: string): string {
@@ -120,18 +150,83 @@ function createOcrId(prefix: string): string {
   return `${prefix}_${ocrSeq}_${rand}`;
 }
 
-function normalizeNameForMatch(name: string): string {
-  return name.replace(/[\s\u3000]+/g, '').toLowerCase();
+function isImageFileCandidate(file: File): boolean {
+  if (file.type.startsWith('image/')) return true;
+  return /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/i.test(file.name);
 }
 
-function isMatchedInRoster(row: EditableOcrPlayer, roster: Player[]): boolean {
-  const num = row.number.trim();
-  const norm = normalizeNameForMatch(row.name);
-  if (num && roster.some((p) => p.number.trim() === num)) return true;
-  if (norm && roster.some((p) => normalizeNameForMatch(p.name) === norm)) {
-    return true;
+async function readAllDirectoryEntries(
+  entry: WebkitEntryLike
+): Promise<WebkitEntryLike[]> {
+  if (!entry.createReader) return [];
+  const reader = entry.createReader();
+  const all: WebkitEntryLike[] = [];
+  while (true) {
+    const batch = await new Promise<WebkitEntryLike[]>((resolve) => {
+      reader.readEntries(
+        (entries) => resolve(entries),
+        () => resolve([])
+      );
+    });
+    if (batch.length === 0) break;
+    all.push(...batch);
   }
-  return false;
+  return all;
+}
+
+async function collectFilesFromWebkitEntry(
+  entry: WebkitEntryLike,
+  parentPath = ''
+): Promise<IncomingImageEntry[]> {
+  if (entry.isFile && entry.file) {
+    const file = await new Promise<File | null>((resolve) => {
+      entry.file!(
+        (f) => resolve(f),
+        () => resolve(null)
+      );
+    });
+    if (!file || !isImageFileCandidate(file)) return [];
+    return [{ file, pathHint: parentPath || entry.fullPath || '' }];
+  }
+  if (entry.isDirectory) {
+    const children = await readAllDirectoryEntries(entry);
+    const nextPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+    const nested = await Promise.all(
+      children.map((child) => collectFilesFromWebkitEntry(child, nextPath))
+    );
+    return nested.flat();
+  }
+  return [];
+}
+
+async function extractImageEntriesFromDataTransfer(
+  dt: DataTransfer
+): Promise<IncomingImageEntry[]> {
+  const items = Array.from(dt.items ?? []);
+  const webkitEntries = items
+    .map((item) => {
+      const maybeWithEntry = item as DataTransferItem & {
+        webkitGetAsEntry?: () => unknown;
+      };
+      const entry =
+        typeof maybeWithEntry.webkitGetAsEntry === 'function'
+          ? maybeWithEntry.webkitGetAsEntry()
+          : null;
+      return entry as WebkitEntryLike | null;
+    })
+    .filter((entry): entry is WebkitEntryLike => entry !== null);
+
+  if (webkitEntries.length > 0) {
+    const collected = await Promise.all(
+      webkitEntries.map((entry) => collectFilesFromWebkitEntry(entry))
+    );
+    const flat = collected.flat();
+    if (flat.length > 0) return flat;
+  }
+
+  return Array.from(dt.files ?? [])
+    .filter(isImageFileCandidate)
+    .map((file) => ({ file, pathHint: '' }));
 }
 
 function calcRowPts(row: EditableOcrPlayer): number {
@@ -159,16 +254,23 @@ function evaluateItemStatus(item: PreviewOcrItem): {
   return { totalCalcPts, anyRowWarn, totalMismatch };
 }
 
+function resolveTargetGame(
+  item: PreviewOcrItem,
+  games: GameRecord[],
+  fallbackGame: GameRecord
+): GameRecord {
+  return games.find((g) => g.id === item.targetGameId) ?? fallbackGame;
+}
+
 function resolveTargetMatchId(
   item: PreviewOcrItem,
-  idx: number,
   matches: GameMatch[]
 ): string | '__new__' {
   if (item.targetMatchId === '__new__') return '__new__';
   if (item.targetMatchId && matches.some((m) => m.id === item.targetMatchId)) {
     return item.targetMatchId;
   }
-  return matches[idx]?.id ?? '__new__';
+  return matches[0]?.id ?? '__new__';
 }
 
 function resolveTeamUnit(
@@ -181,74 +283,21 @@ function resolveTeamUnit(
   return matches.find((m) => m.id === resolvedMatchId)?.teamUnit ?? '';
 }
 
-function extractMmDdFromFilename(name: string): string {
-  const match = name.match(/(?:^|[^0-9])(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:$|[^0-9])/);
-  if (!match) return '';
-  return `${match[1]}-${match[2]}`;
+function isUsableStatsImageType(
+  imageType: ParsedStatsResult['imageType']
+): boolean {
+  return imageType === 'box_score' || imageType === 'paper_scoresheet';
 }
 
-function findBestMatchingGame(
-  games: GameRecord[],
-  mmddHint: string,
-  opponentHints: string[]
-): GameRecord | null {
-  const cleanedHints = Array.from(
-    new Set(
-      opponentHints
-        .map((s) => s.trim().toLowerCase())
-        .filter((s) => s.length >= 2 && s !== '対戦相手')
-    )
-  );
-  if (!mmddHint && cleanedHints.length === 0) return null;
-
-  let monthTitleRe: RegExp | null = null;
-  if (mmddHint) {
-    const [mm, dd] = mmddHint.split('-').map((v) => parseInt(v, 10));
-    if (mm >= 1 && dd >= 1) {
-      monthTitleRe = new RegExp(`(?:^|[^0-9])${mm}/${dd}(?:$|[^0-9])`);
-    }
-  }
-
-  let bestGame: GameRecord | null = null;
-  let bestScore = 0;
-  let tiedTop = false;
-
-  for (const g of games) {
-    let score = 0;
-    if (mmddHint) {
-      if (g.date.endsWith(`-${mmddHint}`) || (monthTitleRe && monthTitleRe.test(g.title))) {
-        score += 10;
-      }
-    }
-    const haystack = [
-      g.title,
-      g.opponent,
-      ...getGameMatches(g).map((m) => m.opponent),
-    ]
-      .join(' ')
-      .toLowerCase();
-    for (const hint of cleanedHints) {
-      if (haystack.includes(hint)) {
-        score += 3;
-      }
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestGame = g;
-      tiedTop = false;
-    } else if (score > 0 && score === bestScore) {
-      tiedTop = true;
-    }
-  }
-
-  if (bestScore >= 10) return bestGame;
-  if (!mmddHint && bestScore >= 3 && !tiedTop) return bestGame;
-  return null;
+function isOpponentCompatible(a: string, b: string): boolean {
+  const na = a.trim().toLowerCase();
+  const nb = b.trim().toLowerCase();
+  if (!na || !nb || na === '対戦相手' || nb === '対戦相手') return true;
+  return na === nb || na.includes(nb) || nb.includes(na);
 }
 
 export function StatsScreenshotImporter({
   activeGame,
-  activeMatches,
   activeMatch,
   games,
   players,
@@ -259,6 +308,9 @@ export function StatsScreenshotImporter({
   onOpenGameDetail,
 }: StatsScreenshotImporterProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragDepthRef = useRef(0);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [includePaperScoresheets, setIncludePaperScoresheets] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [progressText, setProgressText] = useState('');
@@ -266,14 +318,13 @@ export function StatsScreenshotImporter({
   const [ocrError, setOcrError] = useState('');
   const [previewItems, setPreviewItems] = useState<PreviewOcrItem[]>([]);
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
-  const [autoMatchedGameTitle, setAutoMatchedGameTitle] = useState('');
+  const [autoMatchNotice, setAutoMatchNotice] = useState('');
   const [failedFiles, setFailedFiles] = useState<
-    Array<{ file: File; error: string }>
+    Array<{ file: File; pathHint: string; error: string }>
   >([]);
   const [lastSavedInfo, setLastSavedInfo] = useState<{
-    count: number;
-    gameTitle: string;
-    clipSummary: string;
+    totalCount: number;
+    savedGames: SavedGameSummary[];
   } | null>(null);
   const [batchMeta, setBatchMeta] = useState<{
     skippedCount: number;
@@ -285,7 +336,7 @@ export function StatsScreenshotImporter({
     setPreviewItems([]);
     setExpandedIds({});
     setFailedFiles([]);
-    setAutoMatchedGameTitle('');
+    setAutoMatchNotice('');
     setBatchMeta({ skippedCount: 0, failedCount: 0 });
     setProgressText('');
     setOcrWarning('');
@@ -298,70 +349,222 @@ export function StatsScreenshotImporter({
     });
 
   const buildPreviewItem = (
-    fileName: string,
-    data: ParsedStatsResult,
-    targetMatchId: string | '__new__',
-    defaultTeamUnit: TeamUnit,
-    fallbackOpponent: string
+    entry: { fileName: string; pathHint: string; data: ParsedStatsResult },
+    assignment: {
+      targetGame: GameRecord;
+      autoMatchedGame: boolean;
+      detectedMmDd: string;
+      targetMatchId: string | '__new__';
+      defaultTeamUnit: TeamUnit;
+      mergeMode: OcrMergeMode;
+    }
   ): PreviewOcrItem => ({
     itemId: createOcrId('ocr_item'),
-    fileName,
-    thumbDataUrl: data.thumbDataUrl,
-    targetMatchId,
-    awayTeamName: data.awayTeamName || fallbackOpponent,
-    teamUnit: defaultTeamUnit,
-    homeScore: data.homeScore,
-    awayScore: data.awayScore,
-    rows: data.players.map((p) => ({
-      id: createOcrId('ocr_row'),
-      reportedPts: p.pts,
-      number: p.number,
-      name: p.name,
-      twoPm: p.twoPm,
-      twoPa: p.twoPa,
-      threePm: p.threePm,
-      threePa: p.threePa,
-      ftm: p.ftm,
-      fta: p.fta,
-      oreb: p.oreb,
-      dreb: p.dreb,
-      ast: p.ast,
-      stl: p.stl,
-      blk: p.blk,
-      to: p.to,
-      pf: p.pf,
-    })),
+    fileName: entry.fileName,
+    thumbDataUrl: entry.data.thumbDataUrl,
+    targetGameId: assignment.targetGame.id,
+    targetMatchId: assignment.targetMatchId,
+    mergeMode: assignment.mergeMode,
+    imageType: entry.data.imageType,
+    sourceKind:
+      entry.data.sourceKind ??
+      (entry.data.imageType === 'paper_scoresheet'
+        ? 'jba_scoresheet'
+        : 'app_screenshot'),
+    quarterLabel: entry.data.quarterLabel ?? '',
+    detectedMmDd: assignment.detectedMmDd,
+    autoMatchedGame: assignment.autoMatchedGame,
+    awayTeamName:
+      entry.data.awayTeamName || assignment.targetGame.opponent || '対戦相手',
+    teamUnit: assignment.defaultTeamUnit,
+    homeScore: entry.data.homeScore,
+    awayScore: entry.data.awayScore,
+    rows: hydrateOcrPlayersWithRoster(entry.data.players, players, createOcrId),
   });
 
+  const assignEntriesToPreviewItems = (
+    usable: Array<{
+      fileName: string;
+      pathHint: string;
+      data: ParsedStatsResult;
+    }>,
+    seedItems: PreviewOcrItem[]
+  ): {
+    items: PreviewOcrItem[];
+    matchedGames: GameRecord[];
+  } => {
+    const usedMatchesByGame = new Map<string, Set<string>>();
+    const lastQuarterTimelineByGame = new Map<
+      string,
+      { targetMatchId: string | '__new__'; opponent: string; teamUnit: TeamUnit }
+    >();
+
+    for (const existing of seedItems) {
+      const set = usedMatchesByGame.get(existing.targetGameId) ?? new Set<string>();
+      if (existing.targetMatchId !== '__new__') {
+        set.add(existing.targetMatchId);
+      }
+      usedMatchesByGame.set(existing.targetGameId, set);
+      if (existing.sourceKind === 'quarter_timeline') {
+        lastQuarterTimelineByGame.set(existing.targetGameId, {
+          targetMatchId: existing.targetMatchId,
+          opponent: existing.awayTeamName,
+          teamUnit: existing.teamUnit,
+        });
+      }
+    }
+
+    const matchedGamesMap = new Map<string, GameRecord>();
+    const createdItems: PreviewOcrItem[] = [];
+
+    for (const entry of usable) {
+      const matchInfo = findBestMatchingGameForItem(games, {
+        screenshotDate: entry.data.screenshotDate,
+        awayTeamName: entry.data.awayTeamName,
+        fileName: entry.fileName,
+        pathHint: entry.pathHint,
+      });
+      const targetGame = matchInfo.game ?? activeGame;
+      const autoMatchedGame = Boolean(matchInfo.game);
+      if (matchInfo.game) {
+        matchedGamesMap.set(matchInfo.game.id, matchInfo.game);
+      }
+
+      const targetMatches = getGameMatches(targetGame);
+      const usedSet = usedMatchesByGame.get(targetGame.id) ?? new Set<string>();
+      const sourceKind: OcrSourceKind =
+        entry.data.sourceKind ??
+        (entry.data.imageType === 'paper_scoresheet'
+          ? 'jba_scoresheet'
+          : 'app_screenshot');
+      const prevTimeline = lastQuarterTimelineByGame.get(targetGame.id);
+
+      let targetMatchId: string | '__new__' = '__new__';
+      let defaultTeamUnit: TeamUnit = '';
+      let mergeMode: OcrMergeMode = 'replace';
+
+      if (
+        sourceKind === 'quarter_timeline' &&
+        prevTimeline &&
+        isOpponentCompatible(prevTimeline.opponent, entry.data.awayTeamName)
+      ) {
+        targetMatchId = prevTimeline.targetMatchId;
+        defaultTeamUnit = prevTimeline.teamUnit;
+        mergeMode = 'add';
+      } else {
+        const preferredStartIdx =
+          targetGame.id === activeGame.id && activeMatch && usedSet.size === 0
+            ? Math.max(
+                0,
+                targetMatches.findIndex((m) => m.id === activeMatch.id)
+              )
+            : 0;
+        const rotatedMatches = [
+          ...targetMatches.slice(preferredStartIdx),
+          ...targetMatches.slice(0, preferredStartIdx),
+        ];
+
+        const oppMatch = entry.data.awayTeamName
+          ? rotatedMatches.find(
+              (m) =>
+                !usedSet.has(m.id) &&
+                isOpponentCompatible(m.opponent, entry.data.awayTeamName)
+            )
+          : undefined;
+        const nextUnused = rotatedMatches.find((m) => !usedSet.has(m.id));
+        const chosenMatch = oppMatch ?? nextUnused ?? null;
+
+        if (chosenMatch) {
+          targetMatchId = chosenMatch.id;
+          defaultTeamUnit = chosenMatch.teamUnit ?? '';
+          usedSet.add(chosenMatch.id);
+          usedMatchesByGame.set(targetGame.id, usedSet);
+        }
+      }
+
+      const detectedMmDd =
+        matchInfo.mmddHint ||
+        extractDateAndOpponentHintsFromFileName(entry.fileName).mmdd;
+
+      const built = buildPreviewItem(entry, {
+        targetGame,
+        autoMatchedGame,
+        detectedMmDd,
+        targetMatchId,
+        defaultTeamUnit,
+        mergeMode,
+      });
+      createdItems.push(built);
+
+      if (sourceKind === 'quarter_timeline') {
+        lastQuarterTimelineByGame.set(targetGame.id, {
+          targetMatchId: built.targetMatchId,
+          opponent: built.awayTeamName,
+          teamUnit: built.teamUnit,
+        });
+      }
+    }
+
+    return {
+      items: createdItems,
+      matchedGames: Array.from(matchedGamesMap.values()),
+    };
+  };
+
   const runOcrBatch = async (
-    filesToScan: File[],
+    entriesToScan: IncomingImageEntry[],
     options?: { skipPreFilter?: boolean }
   ) => {
     type PreparedEntry = {
       index: number;
       file: File;
       fileName: string;
+      pathHint: string;
       prepared: PreparedScreenshot;
     };
     type FileOutcome =
-      | { ok: true; file: File; fileName: string; data: ParsedStatsResult }
-      | { ok: false; file: File; fileName: string; error: string };
+      | {
+          ok: true;
+          file: File;
+          fileName: string;
+          pathHint: string;
+          data: ParsedStatsResult;
+        }
+      | {
+          ok: false;
+          file: File;
+          fileName: string;
+          pathHint: string;
+          error: string;
+        };
 
-    const outcomes: FileOutcome[] = new Array<FileOutcome>(filesToScan.length);
+    const outcomes: FileOutcome[] = new Array<FileOutcome>(entriesToScan.length);
     const preparedEntries: PreparedEntry[] = [];
 
-    for (let i = 0; i < filesToScan.length; i += 1) {
-      const file = filesToScan[i];
+    for (let i = 0; i < entriesToScan.length; i += 1) {
+      const { file, pathHint } = entriesToScan[i];
       setProgressText(
-        `画像を事前仕分け中... (${i + 1}/${filesToScan.length}枚)`
+        `画像を事前仕分け中... (${i + 1}/${entriesToScan.length}枚)`
       );
       try {
         const prepared = await prepareScreenshotForOcr(file);
-        preparedEntries.push({ index: i, file, fileName: file.name, prepared });
+        preparedEntries.push({
+          index: i,
+          file,
+          fileName: file.name,
+          pathHint,
+          prepared,
+        });
       } catch (err: unknown) {
         const msg =
           err instanceof Error ? err.message : '画像の読み込みに失敗しました。';
-        outcomes[i] = { ok: false, file, fileName: file.name, error: msg };
+        outcomes[i] = {
+          ok: false,
+          file,
+          fileName: file.name,
+          pathHint,
+          error: msg,
+        };
       }
     }
 
@@ -373,7 +576,7 @@ export function StatsScreenshotImporter({
     );
     const canPreSkip =
       !options?.skipPreFilter &&
-      filesToScan.length >= 2 &&
+      entriesToScan.length >= 2 &&
       whiteItems.length > 0 &&
       darkItems.length > 0;
     const candidatesToSend = canPreSkip ? whiteItems : preparedEntries;
@@ -385,8 +588,11 @@ export function StatsScreenshotImporter({
           ok: true,
           file: entry.file,
           fileName: entry.fileName,
+          pathHint: entry.pathHint,
           data: {
             imageType: 'shot_chart',
+            sourceKind: 'other',
+            quarterLabel: '',
             homeTeamName: '',
             awayTeamName: '',
             homeScore: 0,
@@ -400,12 +606,12 @@ export function StatsScreenshotImporter({
 
     let cursor = 0;
     let doneCount = 0;
-    let foundBoxCount = 0;
+    let foundStatsCount = 0;
 
     const formatSendProgress = () => {
       const skipSuffix =
         preSkippedCount > 0 ? `・対象外${preSkippedCount}枚スキップ済` : '';
-      return `ボックススコアを解析中... (${doneCount}/${candidatesToSend.length}枚${skipSuffix}・検出${foundBoxCount}件)`;
+      return `スタッツを解析中... (${doneCount}/${candidatesToSend.length}枚${skipSuffix}・検出${foundStatsCount}件)`;
     };
 
     if (candidatesToSend.length > 0) {
@@ -456,10 +662,11 @@ export function StatsScreenshotImporter({
             ok: true,
             file: candidate.file,
             fileName: candidate.fileName,
+            pathHint: candidate.pathHint,
             data,
           };
-          if (data.imageType === 'box_score') {
-            foundBoxCount += 1;
+          if (isUsableStatsImageType(data.imageType)) {
+            foundStatsCount += 1;
           }
         } catch (err: unknown) {
           const msg =
@@ -470,6 +677,7 @@ export function StatsScreenshotImporter({
             ok: false,
             file: candidate.file,
             fileName: candidate.fileName,
+            pathHint: candidate.pathHint,
             error: msg,
           };
         } finally {
@@ -493,16 +701,19 @@ export function StatsScreenshotImporter({
       (o): o is Extract<FileOutcome, { ok: false }> => !o.ok
     );
 
-    const boxItems = successes.filter((s) => s.data.imageType === 'box_score');
+    const statsItems = successes.filter((s) =>
+      isUsableStatsImageType(s.data.imageType)
+    );
     const teamSummaryItems = successes.filter(
       (s) =>
         s.data.imageType === 'team_summary' &&
         (s.data.homeScore > 0 || s.data.awayScore > 0)
     );
-    const usable = boxItems.length > 0 ? boxItems : teamSummaryItems;
+    const usable = statsItems.length > 0 ? statsItems : teamSummaryItems;
     const skippedCount = successes.length - usable.length;
     const nextFailed = failures.map((f) => ({
       file: f.file,
+      pathHint: f.pathHint,
       error: f.error,
     }));
 
@@ -515,30 +726,28 @@ export function StatsScreenshotImporter({
     };
   };
 
-  const handleFileSelected = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const selectedFiles = Array.from(e.target.files ?? []);
-    e.target.value = '';
-    if (selectedFiles.length === 0) return;
+  const processIncomingFiles = async (entries: IncomingImageEntry[]) => {
+    if (entries.length === 0 || parsing || saving) return;
 
-    const sortedFiles = [...selectedFiles].sort((a, b) =>
-      a.name.localeCompare(b.name, 'ja', { numeric: true })
+    const sortedEntries = [...entries].sort((a, b) =>
+      a.file.name.localeCompare(b.file.name, 'ja', { numeric: true })
     );
 
     setParsing(true);
     setOcrWarning('');
     setOcrError('');
     setLastSavedInfo(null);
-    setAutoMatchedGameTitle('');
+    setAutoMatchNotice('');
     setPreviewItems([]);
     setExpandedIds({});
     setFailedFiles([]);
     setBatchMeta({ skippedCount: 0, failedCount: 0 });
-    setProgressText(`画像を事前仕分け中... (0/${sortedFiles.length}枚)`);
+    setProgressText(`画像を事前仕分け中... (0/${sortedEntries.length}枚)`);
 
     try {
-      const result = await runOcrBatch(sortedFiles);
+      const result = await runOcrBatch(sortedEntries, {
+        skipPreFilter: includePaperScoresheets,
+      });
       const {
         successes,
         usable,
@@ -549,74 +758,66 @@ export function StatsScreenshotImporter({
       setFailedFiles(failedEntries);
 
       if (usable.length === 0) {
-        if (sortedFiles.length === 1) {
+        if (sortedEntries.length === 1) {
           if (failedEntries.length === 1) {
             setOcrError(failedEntries[0].error);
             return;
           }
           if (successes[0]?.data.imageType === 'shot_chart') {
             setOcrWarning(
-              'シュートチャートの画像が選ばれました。選手一覧の表が載っている「ボックススコア」のスクショを選んでください。'
+              'シュートチャートの画像が選ばれました。ボックススコアまたは紙のスコアシートの画像を選んでください。'
             );
             return;
           }
           setOcrWarning(
-            'ボックススコアの表が見つかりませんでした。選手の一覧表がはっきり写っているスクショをお試しください。'
+            'スタッツ表・スコアシートが見つかりませんでした。文字や表がはっきり写っている画像をお試しください。'
           );
           return;
         }
 
-        const activeCount = sortedFiles.length - preSkippedCount;
+        const activeCount = sortedEntries.length - preSkippedCount;
         if (failedEntries.length === activeCount && failedEntries[0]) {
           setOcrError(failedEntries[0].error);
           return;
         }
+        const paperHint =
+          !includePaperScoresheets && preSkippedCount > 0
+            ? ' 紙のスコアシートが含まれている場合は「紙のスコアシートも含める（事前スキップOFF）」にチェックを入れてお試しください。'
+            : '';
         setOcrWarning(
-          `選んだ ${sortedFiles.length}枚の中にボックススコアが見つかりませんでした（シュートチャート等 ${skippedCount}枚をスキップ）。`
+          `選んだ ${sortedEntries.length}枚の中にボックススコア／紙スコアシートが見つかりませんでした（対象外 ${skippedCount}枚をスキップ）。${paperHint}`
         );
         return;
       }
 
-      const mmddHint =
-        usable.map((u) => u.data.screenshotDate || '').find(Boolean) ||
-        sortedFiles.map((f) => extractMmDdFromFilename(f.name)).find(Boolean) ||
-        '';
-      const opponentHints = usable
-        .map((u) => u.data.awayTeamName)
-        .filter(Boolean);
-      const matchedGame = findBestMatchingGame(games, mmddHint, opponentHints);
-      const effectiveGame = matchedGame ?? activeGame;
-      const effectiveMatches = matchedGame
-        ? getGameMatches(matchedGame)
-        : activeMatches;
+      const { items: builtItems, matchedGames } = assignEntriesToPreviewItems(
+        usable,
+        []
+      );
 
-      if (matchedGame && matchedGame.id !== activeGame.id) {
-        onChangeTargetGame(matchedGame.id);
-        setAutoMatchedGameTitle(matchedGame.title);
-      }
-
-      const activeMatchIdx =
-        effectiveGame.id === activeGame.id && activeMatch
-          ? effectiveMatches.findIndex((m) => m.id === activeMatch.id)
-          : 0;
-      const startIdx = activeMatchIdx >= 0 ? activeMatchIdx : 0;
-
-      const builtItems: PreviewOcrItem[] = usable.map((entry, idx) => {
-        const assignedMatch = effectiveMatches[startIdx + idx] ?? null;
-        return buildPreviewItem(
-          entry.fileName,
-          entry.data,
-          assignedMatch ? assignedMatch.id : '__new__',
-          assignedMatch?.teamUnit ?? '',
-          effectiveGame.opponent
+      if (matchedGames.length === 1 && matchedGames[0].id !== activeGame.id) {
+        onChangeTargetGame(matchedGames[0].id);
+        setAutoMatchNotice(
+          `写真の日付・相手名から「${matchedGames[0].title}」を自動で選びました（各カードから個別に変更もできます）`
         );
-      });
+      } else if (matchedGames.length > 1) {
+        setAutoMatchNotice(
+          `写真の日付・相手名から ${matchedGames.length}日分の試合へ自動で仕分けました（各カードで調整してまとめて保存できます）`
+        );
+      } else if (matchedGames.length === 1) {
+        setAutoMatchNotice(
+          `写真の日付・相手名から「${matchedGames[0].title}」に自動紐づけしました`
+        );
+      }
 
       const nextExpanded: Record<string, boolean> = {};
       builtItems.forEach((item) => {
         const st = evaluateItemStatus(item);
         nextExpanded[item.itemId] =
-          builtItems.length === 1 || st.anyRowWarn || st.totalMismatch;
+          builtItems.length === 1 ||
+          item.imageType === 'paper_scoresheet' ||
+          st.anyRowWarn ||
+          st.totalMismatch;
       });
 
       setPreviewItems(builtItems);
@@ -624,7 +825,7 @@ export function StatsScreenshotImporter({
       setBatchMeta({ skippedCount, failedCount: failedEntries.length });
       setAutoAddMissing(true);
       onNotify(
-        `ボックススコア ${builtItems.length}件を読み取りました`,
+        `スタッツ ${builtItems.length}件を読み取りました`,
         'success'
       );
     } catch (err: unknown) {
@@ -639,10 +840,72 @@ export function StatsScreenshotImporter({
     }
   };
 
+  const handleFileSelected = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const selectedFiles = Array.from(e.target.files ?? []).filter(
+      isImageFileCandidate
+    );
+    e.target.value = '';
+    if (selectedFiles.length === 0) return;
+    await processIncomingFiles(
+      selectedFiles.map((file) => ({ file, pathHint: '' }))
+    );
+  };
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (parsing || saving) return;
+    dragDepthRef.current += 1;
+    setIsDragOver(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (parsing || saving) return;
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'copy';
+    }
+    if (!isDragOver) {
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
+    if (parsing || saving) return;
+
+    const entries = await extractImageEntriesFromDataTransfer(e.dataTransfer);
+    if (entries.length === 0) {
+      setOcrWarning(
+        'ドロップされた中に画像ファイル（JPG / PNG / WebP など）が見つかりませんでした。'
+      );
+      return;
+    }
+    await processIncomingFiles(entries);
+  };
+
   const handleRetryFailedFiles = async () => {
     if (failedFiles.length === 0 || parsing || saving) return;
 
-    const retryTargets = failedFiles.map((f) => f.file);
+    const retryTargets: IncomingImageEntry[] = failedFiles.map((f) => ({
+      file: f.file,
+      pathHint: f.pathHint,
+    }));
     setParsing(true);
     setOcrWarning('');
     setOcrError('');
@@ -650,22 +913,10 @@ export function StatsScreenshotImporter({
 
     try {
       const result = await runOcrBatch(retryTargets, { skipPreFilter: true });
-      const activeMatchIdx = activeMatch
-        ? activeMatches.findIndex((m) => m.id === activeMatch.id)
-        : 0;
-      const startIdx = activeMatchIdx >= 0 ? activeMatchIdx : 0;
-
-      const addedItems: PreviewOcrItem[] = result.usable.map((entry, idx) => {
-        const assignedMatch =
-          activeMatches[startIdx + previewItems.length + idx] ?? null;
-        return buildPreviewItem(
-          entry.fileName,
-          entry.data,
-          assignedMatch ? assignedMatch.id : '__new__',
-          assignedMatch?.teamUnit ?? '',
-          activeGame.opponent
-        );
-      });
+      const { items: addedItems } = assignEntriesToPreviewItems(
+        result.usable,
+        previewItems
+      );
 
       if (addedItems.length > 0) {
         setPreviewItems((prev) => [...prev, ...addedItems]);
@@ -673,7 +924,10 @@ export function StatsScreenshotImporter({
           const next = { ...prev };
           addedItems.forEach((item) => {
             const st = evaluateItemStatus(item);
-            next[item.itemId] = st.anyRowWarn || st.totalMismatch;
+            next[item.itemId] =
+              item.imageType === 'paper_scoresheet' ||
+              st.anyRowWarn ||
+              st.totalMismatch;
           });
           return next;
         });
@@ -709,13 +963,30 @@ export function StatsScreenshotImporter({
     patch: Partial<
       Pick<
         PreviewOcrItem,
-        'targetMatchId' | 'awayTeamName' | 'teamUnit' | 'homeScore' | 'awayScore'
+        | 'targetGameId'
+        | 'targetMatchId'
+        | 'mergeMode'
+        | 'awayTeamName'
+        | 'teamUnit'
+        | 'homeScore'
+        | 'awayScore'
       >
     >
   ) => {
     setPreviewItems((prev) =>
       prev.map((item) => (item.itemId === itemId ? { ...item, ...patch } : item))
     );
+  };
+
+  const handleChangeItemTargetGame = (itemId: string, nextGameId: string) => {
+    const nextGame = games.find((g) => g.id === nextGameId);
+    const nextMatches = nextGame ? getGameMatches(nextGame) : [];
+    const firstMatch = nextMatches[0] ?? null;
+    updateItemField(itemId, {
+      targetGameId: nextGameId,
+      targetMatchId: firstMatch ? firstMatch.id : '__new__',
+      teamUnit: firstMatch?.teamUnit ?? '',
+    });
   };
 
   const updateRowField = (
@@ -731,13 +1002,55 @@ export function StatsScreenshotImporter({
           ...item,
           rows: item.rows.map((r) => {
             if (r.id !== rowId) return r;
-            if (field === 'number' || field === 'name') {
-              return { ...r, [field]: rawVal };
+            if (field === 'number') {
+              const normalizedNum = normalizeJerseyNumber(rawVal);
+              const matched = normalizedNum
+                ? resolvePlayerFromRoster(
+                    { number: normalizedNum, name: '' },
+                    players
+                  )
+                : undefined;
+              return {
+                ...r,
+                number: rawVal,
+                name: !r.name.trim() && matched ? matched.name : r.name,
+              };
+            }
+            if (field === 'name') {
+              return { ...r, name: rawVal };
             }
             const num = Math.max(0, Math.round(Number(rawVal) || 0));
             return { ...r, [field]: num };
           }),
         };
+      })
+    );
+  };
+
+  const addBlankPreviewRow = (itemId: string) => {
+    setPreviewItems((prev) =>
+      prev.map((item) => {
+        if (item.itemId !== itemId) return item;
+        const blankRow: EditableOcrPlayer = {
+          id: createOcrId('ocr_row'),
+          reportedPts: 0,
+          number: '',
+          name: '',
+          twoPm: 0,
+          twoPa: 0,
+          threePm: 0,
+          threePa: 0,
+          ftm: 0,
+          fta: 0,
+          oreb: 0,
+          dreb: 0,
+          ast: 0,
+          stl: 0,
+          blk: 0,
+          to: 0,
+          pf: 0,
+        };
+        return { ...item, rows: [...item.rows, blankRow] };
       })
     );
   };
@@ -758,34 +1071,124 @@ export function StatsScreenshotImporter({
     setPreviewItems((prev) => prev.filter((item) => item.itemId !== itemId));
   };
 
+  const findPrecedingSameGameIndex = (idx: number): number => {
+    const current = previewItems[idx];
+    if (!current) return -1;
+    for (let i = idx - 1; i >= 0; i -= 1) {
+      if (previewItems[i].targetGameId === current.targetGameId) {
+        return i;
+      }
+    }
+    return -1;
+  };
+
+  const handleMergeWithPreviousSameGame = (itemId: string) => {
+    const idx = previewItems.findIndex((item) => item.itemId === itemId);
+    if (idx <= 0) return;
+    const prevIdx = findPrecedingSameGameIndex(idx);
+    if (prevIdx === -1) return;
+
+    const base = previewItems[prevIdx];
+    const incoming = previewItems[idx];
+    const mergedRows = mergeEditableOcrPlayerRows(
+      base.rows,
+      incoming.rows,
+      players
+    );
+    const mergedQuarters = [base.quarterLabel, incoming.quarterLabel]
+      .filter(Boolean)
+      .join('+');
+
+    const mergedItem: PreviewOcrItem = {
+      ...base,
+      fileName: `${base.fileName} ＋ ${incoming.fileName}`,
+      quarterLabel: mergedQuarters,
+      imageType:
+        base.imageType === 'paper_scoresheet' ||
+        incoming.imageType === 'paper_scoresheet'
+          ? 'paper_scoresheet'
+          : base.imageType,
+      awayTeamName:
+        base.awayTeamName && base.awayTeamName !== '対戦相手'
+          ? base.awayTeamName
+          : incoming.awayTeamName,
+      teamUnit: base.teamUnit || incoming.teamUnit,
+      homeScore: base.homeScore + incoming.homeScore,
+      awayScore: base.awayScore + incoming.awayScore,
+      rows: mergedRows,
+    };
+
+    setPreviewItems((prev) =>
+      prev
+        .filter((it) => it.itemId !== incoming.itemId)
+        .map((it) => (it.itemId === base.itemId ? mergedItem : it))
+    );
+    setExpandedIds((prev) => ({
+      ...prev,
+      [base.itemId]: true,
+    }));
+    onNotify('同じ試合のカードを1つに合算しました', 'success');
+  };
+
   const handleConfirmSave = async () => {
     if (previewItems.length === 0 || saving) return;
-    const matchLabelMap = new Map(
-      activeMatches.map((m, i) => [m.id, `${i + 1}. ${formatMatchDisplayTitle(m)}`])
-    );
-    const resolvedItems = previewItems.map((item, idx) => {
-      const targetMatchId = resolveTargetMatchId(item, idx, activeMatches);
-      return {
-        targetMatchId,
-        awayTeamName: item.awayTeamName.trim() || activeGame.opponent,
-        teamUnit: resolveTeamUnit(item, targetMatchId, activeMatches),
+
+    const resolvedItems: OcrSaveBatchItem[] = [];
+    const summaryMap = new Map<
+      string,
+      { id: string; title: string; count: number; matchLabels: Set<string> }
+    >();
+
+    for (const item of previewItems) {
+      const targetGame = resolveTargetGame(item, games, activeGame);
+      const targetMatches = getGameMatches(targetGame);
+      const resolvedMatchId = resolveTargetMatchId(item, targetMatches);
+      const resolvedMatch =
+        resolvedMatchId !== '__new__'
+          ? targetMatches.find((m) => m.id === resolvedMatchId)
+          : undefined;
+      const matchIndex =
+        resolvedMatchId !== '__new__'
+          ? targetMatches.findIndex((m) => m.id === resolvedMatchId)
+          : -1;
+      const matchLabel =
+        resolvedMatch && matchIndex !== -1
+          ? `${matchIndex + 1}. ${formatMatchDisplayTitle(resolvedMatch)}`
+          : '新規試合';
+
+      resolvedItems.push({
+        targetGameId: targetGame.id,
+        targetMatchId: resolvedMatchId,
+        mergeMode: item.mergeMode,
+        awayTeamName: item.awayTeamName.trim() || targetGame.opponent,
+        teamUnit: resolveTeamUnit(item, resolvedMatchId, targetMatches),
         homeScore: item.homeScore,
         awayScore: item.awayScore,
         rows: item.rows,
+      });
+
+      const entry = summaryMap.get(targetGame.id) ?? {
+        id: targetGame.id,
+        title: targetGame.title,
+        count: 0,
+        matchLabels: new Set<string>(),
       };
-    });
-    const chosenLabels = Array.from(
-      new Set(
-        resolvedItems.map((item) =>
-          item.targetMatchId === '__new__'
-            ? '新規試合'
-            : (matchLabelMap.get(item.targetMatchId) ?? '選択試合')
-        )
-      )
+      entry.count += 1;
+      entry.matchLabels.add(
+        item.mergeMode === 'add' ? `${matchLabel}(合算)` : matchLabel
+      );
+      summaryMap.set(targetGame.id, entry);
+    }
+
+    const savedGames: SavedGameSummary[] = Array.from(summaryMap.values()).map(
+      (entry) => ({
+        id: entry.id,
+        title: entry.title,
+        count: entry.count,
+        matchSummary: Array.from(entry.matchLabels).join('、'),
+      })
     );
-    const clipSummary = chosenLabels.join('、');
-    const savedCount = resolvedItems.length;
-    const savedGameTitle = activeGame.title;
+    const totalCount = resolvedItems.length;
 
     setSaving(true);
     setOcrError('');
@@ -796,11 +1199,13 @@ export function StatsScreenshotImporter({
       });
 
       if (ok) {
+        if (savedGames.length === 1 && savedGames[0].id !== activeGame.id) {
+          onChangeTargetGame(savedGames[0].id);
+        }
         handleReset();
         setLastSavedInfo({
-          count: savedCount,
-          gameTitle: savedGameTitle,
-          clipSummary,
+          totalCount,
+          savedGames,
         });
       } else {
         setOcrError(
@@ -817,9 +1222,9 @@ export function StatsScreenshotImporter({
     let count = 0;
     for (const item of previewItems) {
       for (const r of item.rows) {
-        if (isMatchedInRoster(r, players)) continue;
-        const num = r.number.trim();
-        const norm = normalizeNameForMatch(r.name);
+        if (resolvePlayerFromRoster(r, players)) continue;
+        const num = normalizeJerseyNumber(r.number);
+        const norm = r.name.replace(/[\s\u3000]+/g, '').toLowerCase();
         const key = num ? `num:${num}` : norm ? `name:${norm}` : r.id;
         if (!seenKeys.has(key)) {
           seenKeys.add(key);
@@ -830,22 +1235,40 @@ export function StatsScreenshotImporter({
     return count;
   })();
 
-  const hasDuplicateTargetMatches = (() => {
-    const used = new Set<string>();
-    for (let idx = 0; idx < previewItems.length; idx += 1) {
-      const resolved = resolveTargetMatchId(previewItems[idx], idx, activeMatches);
-      if (resolved === '__new__') continue;
-      if (used.has(resolved)) return true;
-      used.add(resolved);
+  const hasDuplicateReplaceTargets = (() => {
+    const seenTargets = new Set<string>();
+    for (const item of previewItems) {
+      const targetGame = resolveTargetGame(item, games, activeGame);
+      const targetMatches = getGameMatches(targetGame);
+      const resolvedMatchId = resolveTargetMatchId(item, targetMatches);
+      if (resolvedMatchId === '__new__') continue;
+      const key = `${targetGame.id}::${resolvedMatchId}`;
+      if (seenTargets.has(key) && item.mergeMode === 'replace') {
+        return true;
+      }
+      seenTargets.add(key);
     }
     return false;
   })();
 
+  const targetDaySummaries = (() => {
+    const map = new Map<string, { id: string; title: string; count: number }>();
+    for (const item of previewItems) {
+      const g = resolveTargetGame(item, games, activeGame);
+      const cur = map.get(g.id) ?? { id: g.id, title: g.title, count: 0 };
+      cur.count += 1;
+      map.set(g.id, cur);
+    }
+    return Array.from(map.values());
+  })();
+
   const saveBtnLabel = saving
     ? '保存中...'
-    : previewItems.length > 1
-      ? `${previewItems.length}件をまとめて保存する`
-      : 'この内容で保存する';
+    : targetDaySummaries.length > 1
+      ? `${targetDaySummaries.length}日分（計${previewItems.length}件）をまとめて保存する`
+      : previewItems.length > 1
+        ? `${previewItems.length}件をまとめて保存する`
+        : 'この内容で保存する';
 
   const autoAddCheckbox = uniqueUnmatchedCount > 0 && (
     <label className="ocr-checkbox-row">
@@ -864,10 +1287,10 @@ export function StatsScreenshotImporter({
     <section className="portal-card">
       <div className="block-title-row">
         <Camera size={18} className="accent-icon" />
-        <h3>スクショからスタッツ自動読み取り</h3>
+        <h3>スクショ・スコアシート自動読み取り</h3>
       </div>
       <p className="table-helper-text">
-        アルバムの写真を何枚でもまとめて選べます。シュートチャート等は自動でスキップし、ボックススコアだけを読み取って一覧表示します。
+        LINEアルバムの複数日分の写真やフォルダ、紙のスコアシート（JBA公式・クォーター別シート）もまとめて読み取れます。日付・相手名から各日の試合へ自動仕分けし、1回で一括保存できます。
       </p>
 
       <input
@@ -879,23 +1302,55 @@ export function StatsScreenshotImporter({
         onChange={(e) => void handleFileSelected(e)}
       />
 
-      <button
-        type="button"
-        className="btn-accent btn-block"
-        disabled={parsing || saving}
-        onClick={() => fileInputRef.current?.click()}
+      <div
+        className={`ocr-dropzone ${isDragOver ? 'is-dragover' : ''} ${
+          parsing || saving ? 'is-disabled' : ''
+        }`}
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => void handleDrop(e)}
       >
-        {parsing ? (
-          <>
-            <Loader2 size={17} className="ocr-spin" />{' '}
-            {progressText || 'スクショを読み取り中...'}
-          </>
-        ) : (
-          <>
-            <Camera size={17} /> スクショを選んで読み取る（複数枚まとめてOK）
-          </>
-        )}
-      </button>
+        <button
+          type="button"
+          className="btn-accent btn-block"
+          disabled={parsing || saving}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          {parsing ? (
+            <>
+              <Loader2 size={17} className="ocr-spin" />{' '}
+              {progressText || '画像を読み取り中...'}
+            </>
+          ) : (
+            <>
+              <Camera size={17} /> 写真・スコアシートを選んで読み取る（複数枚OK）
+            </>
+          )}
+        </button>
+
+        <div className="ocr-dropzone-hint">
+          <Upload size={14} />
+          <span>
+            ここに複数の写真やフォルダをそのままドラッグ＆ドロップすることもできます
+          </span>
+        </div>
+
+        <div className="ocr-paper-toggle-box">
+          <label className="ocr-checkbox-row">
+            <input
+              type="checkbox"
+              checked={includePaperScoresheets}
+              disabled={parsing || saving}
+              onChange={(e) => setIncludePaperScoresheets(e.target.checked)}
+            />
+            <span>紙のスコアシートも含める（事前スキップOFF）</span>
+          </label>
+          <p className="ocr-paper-toggle-help">
+            手書きのJBAスコアシートやクォーター別シートを読み取る時はONにしてください（全枚をAIへ送信します）
+          </p>
+        </div>
+      </div>
 
       {parsing && progressText && (
         <p className="ocr-progress-text">{progressText}</p>
@@ -920,17 +1375,32 @@ export function StatsScreenshotImporter({
           <div className="ocr-saved-title">
             <CheckCircle2 size={16} />
             <span>
-              {lastSavedInfo.count}件のスタッツを「{lastSavedInfo.gameTitle}」に保存しました
+              {lastSavedInfo.savedGames.length > 1
+                ? `${lastSavedInfo.savedGames.length}日分（計${lastSavedInfo.totalCount}件）のスタッツをまとめて保存しました`
+                : `${lastSavedInfo.totalCount}件のスタッツを「${
+                    lastSavedInfo.savedGames[0]?.title ?? activeGame.title
+                  }」に保存しました`}
             </span>
           </div>
-          <p className="ocr-saved-sub">保存先：{lastSavedInfo.clipSummary}</p>
-          <button
-            type="button"
-            className="btn-accent btn-block"
-            onClick={onOpenGameDetail}
-          >
-            この日の動画・スタッツを見る
-          </button>
+          {lastSavedInfo.savedGames.map((sg) => (
+            <p key={sg.id} className="ocr-saved-sub">
+              ・{sg.title}（{sg.count}件）：{sg.matchSummary}
+            </p>
+          ))}
+          <div className="ocr-saved-links">
+            {lastSavedInfo.savedGames.map((sg) => (
+              <button
+                key={sg.id}
+                type="button"
+                className="btn-accent btn-block"
+                onClick={() => onOpenGameDetail(sg.id)}
+              >
+                {lastSavedInfo.savedGames.length > 1
+                  ? `「${sg.title}」の動画・スタッツを見る`
+                  : 'この日の動画・スタッツを見る'}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -938,9 +1408,9 @@ export function StatsScreenshotImporter({
         <div className="ocr-batch-list">
           <div className="row-between">
             <span className="field-caption">
-              ボックススコア {previewItems.length}件を検出
+              スタッツ {previewItems.length}件を検出
               {batchMeta.skippedCount > 0
-                ? `（シュートチャート等 ${batchMeta.skippedCount}枚スキップ）`
+                ? `（対象外 ${batchMeta.skippedCount}枚スキップ）`
                 : ''}
               {batchMeta.failedCount > 0
                 ? `（読取失敗 ${batchMeta.failedCount}枚）`
@@ -961,36 +1431,27 @@ export function StatsScreenshotImporter({
           <div className="ocr-unsaved-bar">
             <div className="ocr-unsaved-head">
               <AlertTriangle size={15} />
-              <span>まだ保存されていません（保存先：{activeGame.title}）</span>
+              <span>
+                まだ保存されていません（保存先：
+                {targetDaySummaries.length > 1
+                  ? `${targetDaySummaries.length}日分`
+                  : targetDaySummaries[0]?.title ?? activeGame.title}
+                ）
+              </span>
             </div>
-            {autoMatchedGameTitle === activeGame.title && (
-              <div className="ocr-auto-match-note">
-                写真の日付・相手名から「{autoMatchedGameTitle}」を自動で選びました（下から変更もできます）
-              </div>
+            {autoMatchNotice && (
+              <div className="ocr-auto-match-note">{autoMatchNotice}</div>
             )}
-            {games.length > 1 && (
-              <label className="field-label">
-                <span>保存先の試合日（再生リスト・変更可）</span>
-                <select
-                  className="portal-select"
-                  value={activeGame.id}
-                  onChange={(e) => {
-                    setLastSavedInfo(null);
-                    setAutoMatchedGameTitle('');
-                    onChangeTargetGame(e.target.value);
-                  }}
-                >
-                  {games.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.date} {g.title}（全{getGameMatches(g).length}試合）
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {hasDuplicateTargetMatches && (
+            <div className="ocr-day-summary-pills">
+              {targetDaySummaries.map((d) => (
+                <span key={d.id} className="ocr-day-summary-pill">
+                  {d.title}（{d.count}件）
+                </span>
+              ))}
+            </div>
+            {hasDuplicateReplaceTargets && (
               <div className="admin-warn-note">
-                同じ試合が保存先に複数選ばれています。カード内の「保存先の試合」を別の試合（または「＋ 新しい試合として追加」）に切り替えてください。
+                同じ試合に「上書き保存」のカードが複数あります。別の試合へ切り替えるか、2枚目以降の保存方法を「同じ試合へ合算（加算）」または「前のカードと合算」にしてください。
               </div>
             )}
             {autoAddCheckbox}
@@ -1014,12 +1475,18 @@ export function StatsScreenshotImporter({
               evaluateItemStatus(item);
             const hasWarning = anyRowWarn || totalMismatch;
             const expanded = Boolean(expandedIds[item.itemId]);
-            const resolvedMatchId = resolveTargetMatchId(item, idx, activeMatches);
+            const targetGame = resolveTargetGame(item, games, activeGame);
+            const targetMatches = getGameMatches(targetGame);
+            const resolvedMatchId = resolveTargetMatchId(item, targetMatches);
             const effectiveTeamUnit = resolveTeamUnit(
               item,
               resolvedMatchId,
-              activeMatches
+              targetMatches
             );
+            const isPaper = item.imageType === 'paper_scoresheet';
+            const prevSameGameIdx = findPrecedingSameGameIndex(idx);
+            const prevSameGameItem =
+              prevSameGameIdx !== -1 ? previewItems[prevSameGameIdx] : null;
 
             return (
               <div key={item.itemId} className="ocr-preview-card">
@@ -1034,21 +1501,36 @@ export function StatsScreenshotImporter({
                     )}
                     <div className="ocr-item-title-col">
                       <span className="ocr-filename">{item.fileName}</span>
-                      <span
-                        className={`ocr-status-badge ${
-                          hasWarning ? 'is-warn' : 'is-ok'
-                        }`}
-                      >
-                        {hasWarning ? (
-                          <>
-                            <AlertTriangle size={12} /> 要確認
-                          </>
-                        ) : (
-                          <>
-                            <CheckCircle2 size={12} /> 計算OK（{item.rows.length}名）
-                          </>
+                      <div className="ocr-badge-row">
+                        <span
+                          className={`ocr-status-badge ${
+                            hasWarning ? 'is-warn' : 'is-ok'
+                          }`}
+                        >
+                          {hasWarning ? (
+                            <>
+                              <AlertTriangle size={12} /> 要確認
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 size={12} /> 計算OK（{item.rows.length}名）
+                            </>
+                          )}
+                        </span>
+                        {item.quarterLabel && (
+                          <span className="ocr-quarter-badge">
+                            {item.quarterLabel}
+                          </span>
                         )}
-                      </span>
+                        {item.mergeMode === 'add' && (
+                          <span className="ocr-add-badge">＋合算保存</span>
+                        )}
+                        {item.detectedMmDd && (
+                          <span className="ocr-date-badge">
+                            日付: {item.detectedMmDd}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <button
@@ -1061,25 +1543,86 @@ export function StatsScreenshotImporter({
                   </button>
                 </div>
 
-                <label className="field-label">
-                  <span>保存先の試合</span>
-                  <select
-                    className="portal-select"
-                    value={resolvedMatchId}
-                    onChange={(e) =>
-                      updateItemField(item.itemId, {
-                        targetMatchId: e.target.value,
-                      })
-                    }
-                  >
-                    {activeMatches.map((m, mIdx) => (
-                      <option key={m.id} value={m.id}>
-                        {mIdx + 1}. {formatMatchDisplayTitle(m)}（動画{m.videos.length}本）
+                {isPaper && (
+                  <div className="ocr-paper-badge">
+                    📄 紙スコアシート（手書きのため数値をご確認ください）
+                  </div>
+                )}
+
+                {games.length > 1 && (
+                  <label className="field-label">
+                    <span>
+                      保存先の試合日（再生リスト）
+                      {item.autoMatchedGame ? ' ・自動判定' : ''}
+                    </span>
+                    <select
+                      className="portal-select"
+                      value={targetGame.id}
+                      onChange={(e) =>
+                        handleChangeItemTargetGame(item.itemId, e.target.value)
+                      }
+                    >
+                      {games.map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.date} {g.title}（全{getGameMatches(g).length}試合）
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                <div className="ocr-target-grid">
+                  <label className="field-label">
+                    <span>保存先の試合</span>
+                    <select
+                      className="portal-select"
+                      value={resolvedMatchId}
+                      onChange={(e) =>
+                        updateItemField(item.itemId, {
+                          targetMatchId: e.target.value,
+                        })
+                      }
+                    >
+                      {targetMatches.map((m, mIdx) => (
+                        <option key={m.id} value={m.id}>
+                          {mIdx + 1}. {formatMatchDisplayTitle(m)}（動画
+                          {m.videos.length}本）
+                        </option>
+                      ))}
+                      <option value="__new__">＋ 新しい試合として追加</option>
+                    </select>
+                  </label>
+
+                  <label className="field-label">
+                    <span>保存方法</span>
+                    <select
+                      className="portal-select"
+                      value={item.mergeMode}
+                      onChange={(e) =>
+                        updateItemField(item.itemId, {
+                          mergeMode: e.target.value as OcrMergeMode,
+                        })
+                      }
+                    >
+                      <option value="replace">上書き保存（1試合分）</option>
+                      <option value="add">
+                        同じ試合へ合算（1Q+2Q等の加算）
                       </option>
-                    ))}
-                    <option value="__new__">＋ 新しい試合として追加</option>
-                  </select>
-                </label>
+                    </select>
+                  </label>
+                </div>
+
+                {prevSameGameItem && (
+                  <button
+                    type="button"
+                    className="ocr-merge-card-btn"
+                    onClick={() => handleMergeWithPreviousSameGame(item.itemId)}
+                  >
+                    <Layers size={14} /> 前のカード（
+                    {prevSameGameItem.quarterLabel || prevSameGameItem.fileName}
+                    ）と合算して1試合にまとめる
+                  </button>
+                )}
 
                 <div className="ocr-score-grid">
                   <label className="field-label">
@@ -1182,101 +1725,114 @@ export function StatsScreenshotImporter({
                     </button>
 
                     {expanded && (
-                      <div className="table-scroll-x">
-                        <table className="ocr-edit-table">
-                          <thead>
-                            <tr>
-                              <th className="sticky-col">No / 選手名</th>
-                              <th>PTS</th>
-                              {NUMERIC_COLUMNS.map((col) => (
-                                <th key={col.key}>{col.label}</th>
-                              ))}
-                              <th>削除</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {item.rows.map((row) => {
-                              const matched = isMatchedInRoster(row, players);
-                              const warn = hasRowMismatch(row);
-                              const pts = calcRowPts(row);
-                              return (
-                                <tr
-                                  key={row.id}
-                                  className={warn ? 'ocr-row-warn' : ''}
-                                >
-                                  <td className="sticky-col">
-                                    <div className="ocr-player-cell">
-                                      <input
-                                        type="text"
-                                        className="ocr-num-input ocr-jersey-input"
-                                        value={row.number}
-                                        aria-label="背番号"
-                                        onChange={(e) =>
-                                          updateRowField(
-                                            item.itemId,
-                                            row.id,
-                                            'number',
-                                            e.target.value
-                                          )
-                                        }
-                                      />
-                                      <input
-                                        type="text"
-                                        className="ocr-name-input"
-                                        value={row.name}
-                                        aria-label="選手名"
-                                        onChange={(e) =>
-                                          updateRowField(
-                                            item.itemId,
-                                            row.id,
-                                            'name',
-                                            e.target.value
-                                          )
-                                        }
-                                      />
-                                      {!matched && (
-                                        <span className="ocr-new-badge">新規</span>
-                                      )}
-                                    </div>
-                                  </td>
-                                  <td className="cell-pts">{pts}</td>
-                                  {NUMERIC_COLUMNS.map((col) => (
-                                    <td key={col.key}>
-                                      <input
-                                        type="number"
-                                        min={0}
-                                        className="ocr-num-input"
-                                        value={row[col.key]}
-                                        aria-label={`${row.name} ${col.label}`}
-                                        onChange={(e) =>
-                                          updateRowField(
-                                            item.itemId,
-                                            row.id,
-                                            col.key,
-                                            e.target.value
-                                          )
-                                        }
-                                      />
+                      <>
+                        <div className="table-scroll-x">
+                          <table className="ocr-edit-table">
+                            <thead>
+                              <tr>
+                                <th className="sticky-col">No / 選手名</th>
+                                <th>PTS</th>
+                                {NUMERIC_COLUMNS.map((col) => (
+                                  <th key={col.key}>{col.label}</th>
+                                ))}
+                                <th>削除</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {item.rows.map((row) => {
+                                const matched = Boolean(
+                                  resolvePlayerFromRoster(row, players)
+                                );
+                                const warn = hasRowMismatch(row);
+                                const pts = calcRowPts(row);
+                                return (
+                                  <tr
+                                    key={row.id}
+                                    className={warn ? 'ocr-row-warn' : ''}
+                                  >
+                                    <td className="sticky-col">
+                                      <div className="ocr-player-cell">
+                                        <input
+                                          type="text"
+                                          className="ocr-num-input ocr-jersey-input"
+                                          value={row.number}
+                                          aria-label="背番号"
+                                          onChange={(e) =>
+                                            updateRowField(
+                                              item.itemId,
+                                              row.id,
+                                              'number',
+                                              e.target.value
+                                            )
+                                          }
+                                        />
+                                        <input
+                                          type="text"
+                                          className="ocr-name-input"
+                                          value={row.name}
+                                          aria-label="選手名"
+                                          onChange={(e) =>
+                                            updateRowField(
+                                              item.itemId,
+                                              row.id,
+                                              'name',
+                                              e.target.value
+                                            )
+                                          }
+                                        />
+                                        {!matched && (
+                                          <span className="ocr-new-badge">
+                                            新規
+                                          </span>
+                                        )}
+                                      </div>
                                     </td>
-                                  ))}
-                                  <td>
-                                    <button
-                                      type="button"
-                                      className="btn-icon-danger"
-                                      aria-label={`${row.name}の行を削除`}
-                                      onClick={() =>
-                                        removePreviewRow(item.itemId, row.id)
-                                      }
-                                    >
-                                      <X size={14} />
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
+                                    <td className="cell-pts">{pts}</td>
+                                    {NUMERIC_COLUMNS.map((col) => (
+                                      <td key={col.key}>
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          className="ocr-num-input"
+                                          value={row[col.key]}
+                                          aria-label={`${row.name} ${col.label}`}
+                                          onChange={(e) =>
+                                            updateRowField(
+                                              item.itemId,
+                                              row.id,
+                                              col.key,
+                                              e.target.value
+                                            )
+                                          }
+                                        />
+                                      </td>
+                                    ))}
+                                    <td>
+                                      <button
+                                        type="button"
+                                        className="btn-icon-danger"
+                                        aria-label={`${row.name}の行を削除`}
+                                        onClick={() =>
+                                          removePreviewRow(item.itemId, row.id)
+                                        }
+                                      >
+                                        <X size={14} />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <button
+                          type="button"
+                          className="ocr-add-row-btn"
+                          onClick={() => addBlankPreviewRow(item.itemId)}
+                        >
+                          <Plus size={13} /> 選手行を追加
+                        </button>
+                      </>
                     )}
                   </>
                 )}

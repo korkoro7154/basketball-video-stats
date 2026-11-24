@@ -19,8 +19,21 @@ export interface ParsedOcrPlayer {
   pf: number;
 }
 
+export type OcrSourceKind =
+  | 'app_screenshot'
+  | 'jba_scoresheet'
+  | 'quarter_timeline'
+  | 'other';
+
 export interface ParsedStatsResult {
-  imageType: 'box_score' | 'shot_chart' | 'team_summary' | 'unknown';
+  imageType:
+    | 'box_score'
+    | 'paper_scoresheet'
+    | 'shot_chart'
+    | 'team_summary'
+    | 'unknown';
+  sourceKind?: OcrSourceKind;
+  quarterLabel?: string;
   screenshotDate?: string;
   homeTeamName: string;
   awayTeamName: string;
@@ -64,7 +77,7 @@ export async function prepareScreenshotForOcr(
       throw new Error('画像サイズを取得できませんでした。');
     }
 
-    const maxSide = 1500;
+    const maxSide = 1600;
     const scale = Math.max(width, height) > maxSide ? maxSide / Math.max(width, height) : 1;
     const targetW = Math.max(1, Math.round(width * scale));
     const targetH = Math.max(1, Math.round(height * scale));
@@ -78,7 +91,7 @@ export async function prepareScreenshotForOcr(
     }
     ctx.drawImage(img, 0, 0, targetW, targetH);
 
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.84);
     const commaIdx = dataUrl.indexOf(',');
     const imageBase64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
 

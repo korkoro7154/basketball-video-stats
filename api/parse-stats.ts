@@ -7,6 +7,12 @@ export interface ParsedStatsPayloadInput {
   };
 }
 
+export type OcrSourceKind =
+  | 'app_screenshot'
+  | 'jba_scoresheet'
+  | 'quarter_timeline'
+  | 'other';
+
 export interface ParsedOcrPlayerPayload {
   number: string;
   name: string;
@@ -27,7 +33,14 @@ export interface ParsedOcrPlayerPayload {
 }
 
 export interface ParsedStatsPayloadOutput {
-  imageType: 'box_score' | 'shot_chart' | 'team_summary' | 'unknown';
+  imageType:
+    | 'box_score'
+    | 'paper_scoresheet'
+    | 'shot_chart'
+    | 'team_summary'
+    | 'unknown';
+  sourceKind: OcrSourceKind;
+  quarterLabel: string;
   screenshotDate: string;
   homeTeamName: string;
   awayTeamName: string;
@@ -53,8 +66,19 @@ const RESPONSE_SCHEMA = {
   properties: {
     imageType: {
       type: 'STRING',
-      enum: ['box_score', 'shot_chart', 'team_summary', 'unknown'],
+      enum: [
+        'box_score',
+        'paper_scoresheet',
+        'shot_chart',
+        'team_summary',
+        'unknown',
+      ],
     },
+    sourceKind: {
+      type: 'STRING',
+      enum: ['app_screenshot', 'jba_scoresheet', 'quarter_timeline', 'other'],
+    },
+    quarterLabel: { type: 'STRING' },
     screenshotDate: { type: 'STRING' },
     homeTeamName: { type: 'STRING' },
     awayTeamName: { type: 'STRING' },
@@ -105,6 +129,8 @@ const RESPONSE_SCHEMA = {
   },
   required: [
     'imageType',
+    'sourceKind',
+    'quarterLabel',
     'screenshotDate',
     'homeTeamName',
     'awayTeamName',
@@ -145,17 +171,18 @@ async function verifyFirebaseIdToken(
 }
 
 function buildExtractionPrompt(teamNameHint: string): string {
-  const hintLine = teamNameHint
-    ? `Home team hint: "${teamNameHint}" (top table).`
-    : 'Home team is the top table.';
+  const targetTeam = teamNameHint || '駒場';
 
   return [
-    'Extract Japanese basketball stats from this screenshot into JSON.',
-    hintLine,
-    'imageType: "box_score" (player stats table), "shot_chart" (court map, players=[]), "team_summary" (score card without player rows, players=[]), or "unknown".',
-    'For box_score: extract ONLY the top/home team player rows into players[] (exclude Team/Coaches and TOTALS rows).',
-    'Read homeScore from top TOTALS PTS, awayScore from bottom TOTALS PTS, awayTeamName from bottom table title, and screenshotDate as "MM-DD" if visible (else "").',
-    'Columns left-to-right: No, Name, GS, PTS, 3P(M,A,%), 2P(M,A,%), DK, FT(M,A,%), RBD(OR,DR,TOT), AST, STL, BLK, TO, PF. Note 3P comes BEFORE 2P. Ignore %, GS, DK, RBD TOT, TF, OF, FO, DFL, DQ, MIN. Keep printed Japanese names and jersey numbers as strings.',
+    'Extract Japanese basketball stats from this image into JSON.',
+    `Our team name hint: "${targetTeam}" (may appear as partial match like "駒場" or "都立駒場"). Always output our team as homeTeamName/homeScore/players[] and the opponent as awayTeamName/awayScore.`,
+    'imageType: "box_score" (digital app player stats table), "paper_scoresheet" (handwritten/PDF paper scoresheet), "shot_chart" (court map, players=[]), "team_summary" (score card without player rows, players=[]), or "unknown".',
+    'sourceKind: "app_screenshot" (digital box_score), "jba_scoresheet" (vertical JBA official scoresheet), "quarter_timeline" (horizontal single-quarter scoresheet), or "other".',
+    'quarterLabel: "1Q"-"4Q" or "OT" if single-quarter sheet, else "". screenshotDate: "MM-DD" if visible (e.g. "8月20日" -> "08-20"), else "".',
+    'Case 1 (app box_score): extract ONLY our team player rows (exclude Team/Coaches and TOTALS). Columns left-to-right: No, Name, GS, PTS, 3P(M,A,%), 2P(M,A,%), DK, FT(M,A,%), RBD(OR,DR,TOT), AST, STL, BLK, TO, PF. Note 3P comes BEFORE 2P. Ignore %, GS, DK, RBD TOT, TF, OF, FO, DFL, DQ, MIN.',
+    'Case 2 (jba_scoresheet, vertical Team A top / Team B bottom): locate whether our team is Team A or Team B; put our team in home and opponent in away. Names may be blank; read jersey No. and fouls (P/P2/etc.) from our team roster, and aggregate our team RUNNING SCORE column: 2P (slash + jersey No.), 3P (circled jersey No.), FT (filled dot + jersey No.). Set attempt counts equal to made counts.',
+    'Case 3 (quarter_timeline, horizontal e.g. 第1Q): aggregate handwritten jersey numbers in our team columns (typically left side): F->pf, TO->to, SB->blk, INT->stl, A->ast, O・R->oreb, D・R->dreb, シュート/得点 -> 2P/3P/FT and pts. Set attempt counts equal to made counts when misses are not written.',
+    'Keep jersey numbers and printed Japanese names as strings ("" if blank).',
   ].join('\n');
 }
 
@@ -308,10 +335,38 @@ async function callGeminiVision(
   };
 }
 
-function normalizeScreenshotDate(raw: unknown): string {
-  const s = String(raw ?? '').trim();
+function toAsciiDigits(text: string): string {
+  return text.replace(/[０-９]/g, (ch) =>
+    String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+  );
+}
+
+function normalizeRawJersey(raw: unknown): string {
+  const trimmed = toAsciiDigits(String(raw ?? ''))
+    .replace(/^(?:no\.?|№|[#＃])\s*/i, '')
+    .trim();
+  return trimmed;
+}
+
+function normalizeQuarterLabel(raw: unknown): string {
+  const s = toAsciiDigits(String(raw ?? ''))
+    .trim()
+    .toUpperCase();
   if (!s) return '';
-  const match = s.match(/(?:^|[-/.年\s])(\d{1,2})\s*(?:月|[-/.])\s*(\d{1,2})\s*日?/);
+  if (/^(?:第?\s*1\s*(?:Q|クオーター|クォーター|ピリオド)|Q1)$/.test(s)) return '1Q';
+  if (/^(?:第?\s*2\s*(?:Q|クオーター|クォーター|ピリオド)|Q2)$/.test(s)) return '2Q';
+  if (/^(?:第?\s*3\s*(?:Q|クオーター|クォーター|ピリオド)|Q3)$/.test(s)) return '3Q';
+  if (/^(?:第?\s*4\s*(?:Q|クオーター|クォーター|ピリオド)|Q4)$/.test(s)) return '4Q';
+  if (/^(?:OT\d*|延長)$/.test(s)) return 'OT';
+  return '';
+}
+
+export function normalizeScreenshotDate(raw: unknown): string {
+  const s = toAsciiDigits(String(raw ?? '')).trim();
+  if (!s) return '';
+  const match = s.match(
+    /(?:^|[^\d])(?:(?:19|20)\d{2}\s*[-/.年]\s*)?(1[0-2]|0?[1-9])\s*(?:月|[-/.])\s*(3[01]|[12]\d|0?[1-9])\s*日?(?:$|[^\d])/
+  );
   if (!match) return '';
   const m = parseInt(match[1], 10);
   const d = parseInt(match[2], 10);
@@ -319,7 +374,7 @@ function normalizeScreenshotDate(raw: unknown): string {
   return `${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
 }
 
-function sanitizeParsedOutput(parsed: unknown): ParsedStatsPayloadOutput {
+export function sanitizeParsedOutput(parsed: unknown): ParsedStatsPayloadOutput {
   const rec =
     typeof parsed === 'object' && parsed !== null
       ? (parsed as Record<string, unknown>)
@@ -328,18 +383,31 @@ function sanitizeParsedOutput(parsed: unknown): ParsedStatsPayloadOutput {
   const rawType = String(rec.imageType ?? 'unknown');
   const imageType: ParsedStatsPayloadOutput['imageType'] =
     rawType === 'box_score' ||
+    rawType === 'paper_scoresheet' ||
     rawType === 'shot_chart' ||
     rawType === 'team_summary'
       ? rawType
       : 'unknown';
 
+  const rawSourceKind = String(rec.sourceKind ?? '');
+  const sourceKind: OcrSourceKind =
+    rawSourceKind === 'app_screenshot' ||
+    rawSourceKind === 'jba_scoresheet' ||
+    rawSourceKind === 'quarter_timeline' ||
+    rawSourceKind === 'other'
+      ? rawSourceKind
+      : imageType === 'box_score'
+        ? 'app_screenshot'
+        : 'other';
+
   const rawPlayers = Array.isArray(rec.players) ? rec.players : [];
   const players: ParsedOcrPlayerPayload[] = [];
+  const isPaper = imageType === 'paper_scoresheet';
 
   for (const item of rawPlayers) {
     if (typeof item !== 'object' || item === null) continue;
     const p = item as Record<string, unknown>;
-    const number = String(p.number ?? '').trim();
+    const number = normalizeRawJersey(p.number);
     const name = String(p.name ?? '').trim();
     const lowerName = name.toLowerCase();
 
@@ -357,11 +425,14 @@ function sanitizeParsedOutput(parsed: unknown): ParsedStatsPayloadOutput {
     const twoPa = Math.max(twoPm, toNonNegInt(p.twoPa));
     const ftm = toNonNegInt(p.ftm);
     const fta = Math.max(ftm, toNonNegInt(p.fta));
+    const rawPts = toNonNegInt(p.pts);
+    const calcPts = twoPm * 2 + threePm * 3 + ftm;
+    const pts = isPaper && rawPts === 0 && calcPts > 0 ? calcPts : rawPts;
 
     players.push({
       number,
       name,
-      pts: toNonNegInt(p.pts),
+      pts,
       threePm,
       threePa,
       twoPm,
@@ -378,12 +449,21 @@ function sanitizeParsedOutput(parsed: unknown): ParsedStatsPayloadOutput {
     });
   }
 
+  const rawHomeScore = toNonNegInt(rec.homeScore);
+  const summedPlayerPts = players.reduce((sum, pl) => sum + pl.pts, 0);
+  const homeScore =
+    isPaper && rawHomeScore === 0 && summedPlayerPts > 0
+      ? summedPlayerPts
+      : rawHomeScore;
+
   return {
     imageType,
+    sourceKind,
+    quarterLabel: normalizeQuarterLabel(rec.quarterLabel),
     screenshotDate: normalizeScreenshotDate(rec.screenshotDate),
     homeTeamName: String(rec.homeTeamName ?? '').trim(),
     awayTeamName: String(rec.awayTeamName ?? '').trim(),
-    homeScore: toNonNegInt(rec.homeScore),
+    homeScore,
     awayScore: toNonNegInt(rec.awayScore),
     players,
   };
