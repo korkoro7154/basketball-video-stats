@@ -3,8 +3,10 @@ import { onAuthStateChanged } from 'firebase/auth';
 import {
   ClipboardEdit,
   Cloud,
+  FlaskConical,
   Home,
   LogOut,
+  RotateCcw,
   Trophy,
   Video,
 } from 'lucide-react';
@@ -25,6 +27,16 @@ import {
   subscribePortalData,
 } from './services/portalStore';
 import { extractYouTubeVideoId } from './utils/youtube';
+import {
+  canUseLocalSandbox,
+  clearSandboxData,
+  clonePortalData,
+  readSandboxData,
+  readSandboxEnabled,
+  resolvePortalWriteTarget,
+  writeSandboxData,
+  writeSandboxEnabled,
+} from './utils/sandbox';
 import { LoginScreen } from './components/LoginScreen';
 import { AccessDeniedScreen } from './components/AccessDeniedScreen';
 import { PinGate } from './components/PinGate';
@@ -86,12 +98,27 @@ export function PortalApp() {
     }
   });
 
+  const sandboxAllowed =
+    isFirebaseConfigured &&
+    canUseLocalSandbox({
+      isDev: import.meta.env.DEV,
+      hostname: typeof window !== 'undefined' ? window.location.hostname : '',
+    });
+
   const [localData, setLocalData] = useState<PortalData>(() => loadPortalData());
   const [cloudData, setCloudData] = useState<PortalData | null>(null);
   const [cloudStatus, setCloudStatus] = useState<
     'idle' | 'ready' | 'denied' | 'error'
   >('idle');
   const [cloudError, setCloudError] = useState('');
+  const [sandboxMode, setSandboxMode] = useState<boolean>(() =>
+    sandboxAllowed ? readSandboxEnabled() : false
+  );
+  const [sandboxData, setSandboxData] = useState<PortalData | null>(() =>
+    sandboxAllowed ? readSandboxData() : null
+  );
+  const sandboxActive = sandboxAllowed && sandboxMode;
+  const sandboxActiveRef = useRef(sandboxActive);
   const latestDataRef = useRef<PortalData>(localData);
 
   const [authBusy, setAuthBusy] = useState(false);
@@ -150,7 +177,9 @@ export function PortalApp() {
 
     return subscribePortalData(email, {
       onData: (nextData) => {
-        latestDataRef.current = nextData;
+        if (!sandboxActiveRef.current) {
+          latestDataRef.current = nextData;
+        }
         setCloudData(nextData);
         setCloudStatus('ready');
         setCloudError('');
@@ -173,12 +202,68 @@ export function PortalApp() {
     }
   }, [localData]);
 
+  useEffect(() => {
+    sandboxActiveRef.current = sandboxActive;
+  }, [sandboxActive]);
+
   const currentUser = isFirebaseConfigured ? authState.user : demoUser;
-  const data = isFirebaseConfigured ? (cloudData ?? localData) : localData;
+  const data = isFirebaseConfigured
+    ? sandboxActive
+      ? (sandboxData ?? cloudData ?? localData)
+      : (cloudData ?? localData)
+    : localData;
 
   useEffect(() => {
     latestDataRef.current = data;
   }, [data]);
+
+  const syncSelectionForData = (targetData: PortalData) => {
+    if (
+      selectedGameId &&
+      !targetData.games.some((g) => g.id === selectedGameId)
+    ) {
+      setSelectedGameId(null);
+    }
+    if (
+      selectedPracticeId &&
+      !targetData.practices.some((p) => p.id === selectedPracticeId)
+    ) {
+      setSelectedPracticeId(null);
+    }
+  };
+
+  const handleEnterSandboxMode = () => {
+    const snapshot = clonePortalData(cloudData ?? localData);
+    sandboxActiveRef.current = true;
+    latestDataRef.current = snapshot;
+    setSandboxData(snapshot);
+    setSandboxMode(true);
+    writeSandboxEnabled(true);
+    writeSandboxData(snapshot);
+    notify('テストモードに切り替えました（本番には一切保存されません）', 'info');
+  };
+
+  const handleResetSandboxData = () => {
+    const source = cloudData ?? localData;
+    const snapshot = clonePortalData(source);
+    latestDataRef.current = snapshot;
+    setSandboxData(snapshot);
+    writeSandboxData(snapshot);
+    syncSelectionForData(snapshot);
+    notify('最新の本番データからテストデータをやり直しました', 'success');
+  };
+
+  const handleExitSandboxMode = () => {
+    const live = cloudData ?? localData;
+    sandboxActiveRef.current = false;
+    latestDataRef.current = live;
+    setSandboxMode(false);
+    setSandboxData(null);
+    writeSandboxEnabled(false);
+    clearSandboxData();
+    syncSelectionForData(live);
+    notify('本番データ接続に戻りました', 'info');
+  };
 
   const updateData = async (
     updater: (prev: PortalData) => PortalData
@@ -186,7 +271,23 @@ export function PortalApp() {
     const next = updater(latestDataRef.current);
     latestDataRef.current = next;
 
-    if (isFirebaseConfigured) {
+    const writeTarget = resolvePortalWriteTarget({
+      isFirebaseConfigured,
+      sandboxActive: sandboxActiveRef.current,
+    });
+
+    if (writeTarget === 'sandbox') {
+      setSandboxData(next);
+      if (!writeSandboxData(next)) {
+        notify(
+          'テストデータのブラウザ保存容量を超えましたが、この画面では引き続き試せます（本番には保存されません）',
+          'info'
+        );
+      }
+      return true;
+    }
+
+    if (writeTarget === 'cloud') {
       setCloudData(next);
       try {
         await savePortalDataToCloud(next);
@@ -377,7 +478,7 @@ export function PortalApp() {
   return (
     <div className="portal-shell">
       {/* ヘッダー */}
-      <header className="portal-header">
+      <header className={`portal-header ${sandboxActive ? 'is-sandbox' : ''}`}>
         <div className="portal-header-inner">
           <div className="portal-brand">
             <span className="brand-ball">🏀</span>
@@ -385,10 +486,16 @@ export function PortalApp() {
               <div className="brand-title">{data.teamName}</div>
               <div className="brand-sub-row">
                 <span className="brand-sub">動画・スタッツ共有ポータル</span>
-                {isFirebaseConfigured && (
-                  <span className="cloud-sync-pill">
-                    <Cloud size={10} /> 同期中
+                {sandboxActive ? (
+                  <span className="sandbox-status-pill">
+                    <FlaskConical size={10} /> テスト中
                   </span>
+                ) : (
+                  isFirebaseConfigured && (
+                    <span className="cloud-sync-pill">
+                      <Cloud size={10} /> 同期中
+                    </span>
+                  )
                 )}
               </div>
             </div>
@@ -406,6 +513,49 @@ export function PortalApp() {
             </button>
           </div>
         </div>
+
+        {sandboxAllowed &&
+          (sandboxActive ? (
+            <div className="sandbox-banner" role="status">
+              <div className="sandbox-banner-inner">
+                <span className="sandbox-banner-text">
+                  <FlaskConical size={14} />
+                  テストモード中（変更は本番に一切保存されません）
+                </span>
+                <div className="sandbox-banner-actions">
+                  <button
+                    type="button"
+                    className="sandbox-btn sandbox-btn-reset"
+                    onClick={handleResetSandboxData}
+                  >
+                    <RotateCcw size={12} /> 本番データでやり直す
+                  </button>
+                  <button
+                    type="button"
+                    className="sandbox-btn sandbox-btn-exit"
+                    onClick={handleExitSandboxMode}
+                  >
+                    テスト終了（本番へ戻る）
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="sandbox-switcher-bar">
+              <div className="sandbox-switcher-inner">
+                <span className="sandbox-switcher-text">
+                  本番データに接続中（編集すると本番に反映されます）
+                </span>
+                <button
+                  type="button"
+                  className="sandbox-btn sandbox-btn-enter"
+                  onClick={handleEnterSandboxMode}
+                >
+                  <FlaskConical size={12} /> テストモードに切替
+                </button>
+              </div>
+            </div>
+          ))}
       </header>
 
       {/* メイン領域 */}

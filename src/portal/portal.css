@@ -3215,3 +3215,116 @@ textarea {
   background: rgba(249, 115, 22, 0.16);
   color: #ffedd5;
 }
+
+/* ===================================================== */
+/* ローカル環境限定テストモード（サンドボックス）          */
+/* ===================================================== */
+.portal-header.is-sandbox {
+  border-bottom-color: rgba(245, 158, 11, 0.55);
+}
+
+.sandbox-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.64rem;
+  font-weight: 700;
+  color: #fde68a;
+  background: var(--amber-soft);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.sandbox-banner {
+  background: rgba(245, 158, 11, 0.16);
+  border-top: 1px solid rgba(245, 158, 11, 0.35);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.sandbox-banner-inner {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 8px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sandbox-banner-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #fde68a;
+  line-height: 1.35;
+}
+
+.sandbox-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.sandbox-switcher-bar {
+  background: rgba(20, 24, 36, 0.92);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sandbox-switcher-inner {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 6px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sandbox-switcher-text {
+  font-size: 0.71rem;
+  color: var(--text-muted);
+}
+
+.sandbox-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  border: 1px solid var(--border-subtle);
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.sandbox-btn:hover {
+  opacity: 0.92;
+}
+
+.sandbox-btn-enter {
+  background: var(--amber-soft);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fde68a;
+}
+
+.sandbox-btn-reset {
+  background: rgba(245, 158, 11, 0.24);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: #fef3c7;
+}
+
+.sandbox-btn-exit {
+  background: rgba(15, 23, 42, 0.72);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #f8fafc;
+}

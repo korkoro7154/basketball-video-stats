@@ -12,6 +12,10 @@
 - **クラウドDB・認証**：Firebase プロジェクト `basketball-portal-11649`
   - Firestore の単一ドキュメント（`portal/main`）をリアルタイム購読・保存し、部員全員のスマホへ即時共有する（`src/portal/services/portalStore.ts`）。
   - Firebase 未設定の試作環境のみ、ブラウザの `localStorage` にフォールバックする。
+- **ローカル限定テストモード（サンドボックス）**：
+  - ローカル開発環境（`localhost` / `127.0.0.1` / LAN 開発サーバー等）のみで表示・有効化でき、Vercel 本番URLでは一切表示されない（`src/portal/utils/sandbox.ts`）。
+  - 「テストモードに切替」を押すと、その時点の本番データ（`cloudData`）をディープコピーしてブラウザ内（`localStorage`）のみで保持し、ON 中は Firestore への書き込みを完全に遮断する（Google 認証は維持されるため AI 処理や YouTube 取込もテスト可能）。
+  - リロード時もテストモード状態と仮データを維持し、「本番データでやり直す」での最新本番データからのリセットや、「テスト終了（本番へ戻る）」での本番接続復帰に対応する。
 - **既存ファイル保持方針**：
   - 従来のPC向け画面ファイル（`src/App.tsx`, `src/components/*`, `src/utils/*`）は削除せず参考として保持している。
   - 現在のアプリ入口（`src/main.tsx`）はポータル画面（`PortalApp`）を描画する。
@@ -118,6 +122,7 @@
 - [x] 管理画面の3タブ統合＆選手名簿の複数人コピペ一括登録
 - [x] Vercel 本番反映（`https://basketball-video-stats.vercel.app`）
 - [x] 複数チャット並行開発システム（`scripts/parallel.mjs`・`GEMINI.md`・`PARALLEL_GUIDE.md`・`PARALLEL_BOARD.md`）
+- [x] ローカル環境限定の切り替え式テストモード（本番データをコピーした仮データで安全に検証・リセット可能）
 
 ### 残りの運用タスク（本番サイトでの操作）
 - [ ] 本番サイトの「管理・設定 → 選手名簿」へ、駒81・22名リストをまとめてコピペ登録する
