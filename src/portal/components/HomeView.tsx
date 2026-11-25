@@ -3,14 +3,28 @@ import {
   Trophy,
   Video,
   Search,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   Calendar,
+  Smartphone,
   Tag,
   PlayCircle,
   ClipboardEdit,
 } from 'lucide-react';
 import type { GameRecord, PracticeVideo } from '../types';
 import { computeGameScores, getGameResult } from '../utils/stats';
+
+function isRunningStandalone(): boolean {
+  if (typeof window === 'undefined') return false;
+  const matchStandalone =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(display-mode: standalone)').matches;
+  const iosStandalone = Boolean(
+    (window.navigator as Navigator & { standalone?: boolean }).standalone
+  );
+  return matchStandalone || iosStandalone;
+}
 
 interface HomeViewProps {
   games: GameRecord[];
@@ -32,6 +46,8 @@ export function HomeView({
   onGoToAdmin,
 }: HomeViewProps) {
   const [quickQuery, setQuickQuery] = useState('');
+  const [isStandalone] = useState<boolean>(() => isRunningStandalone());
+  const [installGuideOpen, setInstallGuideOpen] = useState(false);
 
   const sortedGames = [...games].sort((a, b) => b.date.localeCompare(a.date));
   const sortedPractices = [...practices].sort((a, b) => b.date.localeCompare(a.date));
@@ -271,6 +287,62 @@ export function HomeView({
           </div>
         )}
       </section>
+
+      {/* スマホのホーム画面に追加する案内（ブラウザ閲覧時のみ表示） */}
+      {!isStandalone && (
+        <section className="portal-card pwa-install-card">
+          <button
+            type="button"
+            className="pwa-install-toggle"
+            onClick={() => setInstallGuideOpen((v) => !v)}
+          >
+            <img
+              src="/icon-192.png"
+              alt="駒場バスケ部アイコン"
+              className="pwa-install-icon"
+            />
+            <span className="pwa-install-texts">
+              <span className="pwa-install-title">
+                <Smartphone size={14} className="accent-icon" />
+                <span>スマホのホーム画面に追加する</span>
+              </span>
+              <span className="pwa-install-sub">
+                1タップで開けるアプリアイコンを設置できます
+              </span>
+            </span>
+            {installGuideOpen ? (
+              <ChevronUp size={16} className="chevron-muted" />
+            ) : (
+              <ChevronDown size={16} className="chevron-muted" />
+            )}
+          </button>
+
+          {installGuideOpen && (
+            <div className="pwa-install-body">
+              <div className="pwa-install-step-box">
+                <strong>iPhone（Safari）の手順</strong>
+                <ol>
+                  <li>画面下の共有ボタン（四角に上矢印 ↑）をタップ</li>
+                  <li>「ホーム画面に追加」を選択</li>
+                  <li>右上の「追加」をタップ</li>
+                </ol>
+              </div>
+              <div className="pwa-install-step-box">
+                <strong>Android（Chrome）の手順</strong>
+                <ol>
+                  <li>右上のメニュー（⋮）をタップ</li>
+                  <li>「ホーム画面に追加」または「アプリをインストール」を選択</li>
+                  <li>「追加」をタップ</li>
+                </ol>
+              </div>
+              <p className="pwa-install-note">
+                LINEの中で開いている場合は、右下のマークから Safari / Chrome
+                で開き直してから追加してください。
+              </p>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

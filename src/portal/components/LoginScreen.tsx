@@ -52,7 +52,13 @@ export function LoginScreen({
           <span>第1ロック：部員専用ポータル</span>
         </div>
 
-        <div className="portal-auth-logo">🏀</div>
+        <div className="portal-auth-logo">
+          <img
+            src="/icon-192.png"
+            alt={`${teamName} アイコン`}
+            className="portal-auth-logo-img"
+          />
+        </div>
         <h1 className="portal-auth-title">{teamName}</h1>
         <p className="portal-auth-subtitle">
           試合動画・練習動画・スタッツ共有ポータル

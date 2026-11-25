@@ -3328,3 +3328,107 @@ textarea {
   border-color: rgba(255, 255, 255, 0.2);
   color: #f8fafc;
 }
+
+/* ===================================================== */
+/* チームロゴ・ホーム画面追加案内（PWA）                 */
+/* ===================================================== */
+.brand-logo-img {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  flex-shrink: 0;
+}
+
+.portal-auth-logo-img {
+  width: 78px;
+  height: 78px;
+  border-radius: 18px;
+  object-fit: cover;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.38);
+}
+
+.pwa-install-card {
+  gap: 10px;
+}
+
+.pwa-install-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pwa-install-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  flex-shrink: 0;
+}
+
+.pwa-install-texts {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pwa-install-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.pwa-install-sub {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.pwa-install-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.pwa-install-step-box {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pwa-install-step-box strong {
+  font-size: 0.78rem;
+  color: var(--text-main);
+}
+
+.pwa-install-step-box ol {
+  padding-left: 18px;
+  font-size: 0.74rem;
+  color: #cbd5e1;
+  line-height: 1.5;
+}
+
+.pwa-install-note {
+  font-size: 0.72rem;
+  color: #fde68a;
+  line-height: 1.45;
+}
