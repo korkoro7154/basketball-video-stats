@@ -308,3 +308,128 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ===================================================== */
+/* 整理済みチェックボックス・バッジ                        */
+/* ===================================================== */
+.match-org-done-badge {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #6ee7b7;
+  background: var(--green-soft);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.match-org-done-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+
+.match-org-done-bar.is-done {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.match-org-done-check {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--green);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.match-org-done-texts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.match-org-done-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.match-org-done-sub {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.match-org-done-bar.is-done .match-org-done-sub {
+  color: #a7f3d0;
+}
+
+.bulk-org-summary-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bulk-org-organized-count {
+  font-size: 0.73rem;
+  font-weight: 700;
+  color: #6ee7b7;
+}
+
+.bulk-org-item.is-organized {
+  border-color: rgba(16, 185, 129, 0.32);
+  background: rgba(16, 185, 129, 0.05);
+}
+
+.bulk-org-state-badge.is-done {
+  color: #6ee7b7;
+  background: var(--green-soft);
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.bulk-org-item-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.bulk-org-done-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-2);
+  color: var(--text-muted);
+  font-size: 0.69rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.bulk-org-done-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+
+.bulk-org-done-toggle.is-done {
+  color: #6ee7b7;
+  background: var(--green-soft);
+  border-color: rgba(16, 185, 129, 0.45);
+}

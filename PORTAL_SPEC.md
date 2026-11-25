@@ -71,7 +71,10 @@
      - 動画移動後に残ったスタッツ枠の1タップ移動・削除・誤合体防止機能を搭載。
    - **過去の試合日をまとめてAI整理 (`BulkMatchOrganizerPanel`)**：
      - `inspectGameOrganizationStatus()` により「1試合に5本以上集中」「仮ラベルあり」「元タイトル未取得」「対戦相手未設定」「細切れ・クォーター順ズレ」等の未整理候補を自動判定し、各日の内訳プレビュー・理由チップ・スタッツ有無付きで一覧表示。
-     - 整頓済みの日はチェックを外したまま、未整理日だけ（または「未整理候補だけ」「スタッツ未記録のみ」「全選択」）を選んで複数日を順番に一括 AI 自動整理できる（途中中断・既存スタッツ保護に対応）。
+     - 整頓済みの日はチェックを外したまま、未整理日だけ（または「未整理候補だけ」「未整理すべて」「スタッツ未記録のみ」「全選択」）を選んで複数日を順番に一括 AI 自動整理できる（途中中断・既存スタッツ保護に対応）。
+   - **試合日ごとの「整理済み」チェックボックス (`GameRecord.isOrganized`)**：
+     - 試合日プルダウン（選択時先頭に `✅` 表示＋整理済み件数表示）、個別整理パネル（`MatchOrganizerPanel`）、一括 AI 整理一覧の各行で連動して切り替え可能。
+     - 「整理済み」にチェックを入れた試合日は、一括 AI 整理の「未整理候補」および初期選択から自動で除外される。
 2. **YouTube登録タブ (`YouTubeImportPanel`)**
    - 以下の3導線のシンプルな構成で動画登録を行える。
    - **① まとめ再生リストから日付ごとに取り込み**：複数日分が入った再生リストから開始日フィルター（初期値 `2026-11-22`・早期打ち切り対応）で対象日を抽出し、日付別一覧・ワンタップ新着チェック（`localStorage` 記憶）から取り込める。
@@ -106,7 +109,7 @@
 ## 5. データ構造サマリー（Firestore `portal/main` / `src/portal/types.ts`）
 
 - **`PortalData`**：`teamName`, `players`, `games`, `practices`, `practiceTags`, `adminPin`, `ownerEmails`, `allowedEmails`
-- **`GameRecord`（試合日）**：`title`, `date`, `opponent`, `category`, `homeScore`, `awayScore`, `youtubePlaylistId?`, `matches?: GameMatch[]`, `videos`, `events`, `manualBoxScore?`, `notes?`
+- **`GameRecord`（試合日）**：`title`, `date`, `opponent`, `category`, `homeScore`, `awayScore`, `youtubePlaylistId?`, `matches?: GameMatch[]`, `videos`, `events`, `manualBoxScore?`, `notes?`, `isOrganized?`
   - `GameMatch`（各試合）：`id`, `label`, `teamUnit?` (`'A' | 'B' | 'その他' | ''`), `opponent`, `homeScore`, `awayScore`, `videos: GameVideoClip[]`, `events: GameStatEvent[]`, `manualBoxScore?`
   - `GameVideoClip`（動画）：`id`, `label`, `youtubeTitle?`, `youtubeId`, `youtubeUrl`, `homeScore?`, `awayScore?`, `manualBoxScore?`
   - 後方互換のため `syncGameFromMatches()` で親階層のスコア・動画・イベント等とも同期を保つ。

@@ -178,6 +178,9 @@ export function AdminView({
   const sortedGames = [...data.games].sort((a, b) =>
     b.date.localeCompare(a.date)
   );
+  const organizedGamesCount = sortedGames.filter((g) =>
+    Boolean(g.isOrganized)
+  ).length;
   const activeGame =
     sortedGames.find((g) => g.id === selectedGameId) ?? sortedGames[0] ?? null;
   const activeMatches: GameMatch[] = activeGame
@@ -546,6 +549,26 @@ export function AdminView({
       };
     });
     return { ok, beforeCount, afterCount };
+  };
+
+  const handleToggleGameOrganized = async (
+    gameId: string,
+    organized: boolean
+  ) => {
+    const ok = await onUpdateData((prev) => ({
+      ...prev,
+      games: prev.games.map((g) =>
+        g.id === gameId ? { ...g, isOrganized: organized } : g
+      ),
+    }));
+    if (ok) {
+      onNotify(
+        organized
+          ? 'この試合日を「整理済み」にしました'
+          : '「整理済み」チェックを外しました',
+        organized ? 'success' : 'info'
+      );
+    }
   };
 
   const handleMoveGameStats = async (e: React.FormEvent) => {
@@ -924,7 +947,11 @@ export function AdminView({
           {/* 2. 試合日（再生リスト）の選択・管理 */}
           <section className="portal-card">
             <div className="row-between">
-              <span className="field-caption">対象の試合日（再生リスト）</span>
+              <span className="field-caption">
+                {sortedGames.length > 0
+                  ? `対象の試合日（整理済み ${organizedGamesCount} / 全${sortedGames.length}日）`
+                  : '対象の試合日（再生リスト）'}
+              </span>
               <button
                 type="button"
                 className="btn-soft-sm"
@@ -948,6 +975,7 @@ export function AdminView({
                 const sc = computeGameScores(g, 'ALL');
                 return (
                   <option key={g.id} value={g.id}>
+                    {g.isOrganized ? '✅ ' : ''}
                     {g.date} {g.title}（
                     {sc.hasStats
                       ? sc.totalMatchCount > 1
@@ -959,6 +987,36 @@ export function AdminView({
                 );
               })}
             </select>
+
+            {activeGame && (
+              <label
+                className={`match-org-done-bar ${
+                  activeGame.isOrganized ? 'is-done' : ''
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  className="match-org-done-check"
+                  checked={Boolean(activeGame.isOrganized)}
+                  onChange={(e) =>
+                    void handleToggleGameOrganized(
+                      activeGame.id,
+                      e.target.checked
+                    )
+                  }
+                />
+                <span className="match-org-done-texts">
+                  <span className="match-org-done-title">
+                    この試合日は整理済み
+                  </span>
+                  <span className="match-org-done-sub">
+                    {activeGame.isOrganized
+                      ? '整理済み（プルダウンに✅表示・一括AI整理の対象から除外されます）'
+                      : '整理や確認が終わったらチェックを入れておけます'}
+                  </span>
+                </span>
+              </label>
+            )}
 
             {activeGame && activeGameAllScores?.hasStats && (
               <div className="quick-search-actions top-gap">
@@ -1064,6 +1122,9 @@ export function AdminView({
               activeGame={activeGame}
               matches={activeMatches}
               onCommitMatches={handleCommitMatches}
+              onToggleOrganized={(organized) =>
+                void handleToggleGameOrganized(activeGame.id, organized)
+              }
               onNotify={onNotify}
             />
           )}
@@ -1073,6 +1134,9 @@ export function AdminView({
               games={sortedGames}
               activeGameId={activeGame?.id}
               onApplyAiMatchesForGame={handleApplyAiMatchesForGame}
+              onToggleGameOrganized={(gameId, organized) =>
+                void handleToggleGameOrganized(gameId, organized)
+              }
               onSelectGame={(gameId) => {
                 setSelectedGameId(gameId);
                 setSelectedMatchId('');
