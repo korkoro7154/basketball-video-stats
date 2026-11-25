@@ -102,6 +102,7 @@ export interface GameRecord {
   events: GameStatEvent[];
   manualBoxScore?: Record<string, PlayerBoxScoreEntry>;
   notes?: string;
+  isOrganized?: boolean;
 }
 
 export interface PracticeMoment {

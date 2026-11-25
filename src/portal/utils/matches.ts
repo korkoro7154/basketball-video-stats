@@ -823,6 +823,7 @@ export interface GameOrganizationStatus {
   videoCount: number;
   hasStats: boolean;
   missingYoutubeTitleCount: number;
+  isOrganized: boolean;
   needsReview: boolean;
   reasons: string[];
   matchPreview: string;
@@ -926,12 +927,15 @@ export function inspectGameOrganizationStatus(
     }
   }
 
+  const isOrganized = Boolean(game.isOrganized);
+
   return {
     matchCount: matches.length,
     videoCount,
     hasStats,
     missingYoutubeTitleCount,
-    needsReview: videoCount > 0 && reasons.length > 0,
+    isOrganized,
+    needsReview: !isOrganized && videoCount > 0 && reasons.length > 0,
     reasons,
     matchPreview,
   };

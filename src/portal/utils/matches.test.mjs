@@ -44,6 +44,9 @@ function makeGame(overrides = {}) {
     matches: overrides.matches ?? [],
     videos: overrides.videos ?? [],
     events: overrides.events ?? [],
+    ...(overrides.isOrganized !== undefined
+      ? { isOrganized: overrides.isOrganized }
+      : {}),
   };
 }
 
@@ -230,5 +233,29 @@ describe('inspectGameOrganizationStatus', () => {
 
     const status = inspectGameOrganizationStatus(game);
     assert.equal(status.hasStats, true);
+    assert.equal(status.isOrganized, false);
+  });
+
+  it('excludes isOrganized=true games from needsReview even if unorganized patterns exist', () => {
+    const game = makeGame({
+      isOrganized: true,
+      matches: [
+        makeMatch({
+          opponent: '対戦相手',
+          videos: [
+            makeClip({ id: 'c1', label: '動画1', youtubeId: 'v1', youtubeTitle: '' }),
+            makeClip({ id: 'c2', label: '動画2', youtubeId: 'v2' }),
+            makeClip({ id: 'c3', label: '3Q', youtubeId: 'v3' }),
+            makeClip({ id: 'c4', label: '4Q', youtubeId: 'v4' }),
+            makeClip({ id: 'c5', label: '5本目', youtubeId: 'v5' }),
+          ],
+        }),
+      ],
+    });
+
+    const status = inspectGameOrganizationStatus(game);
+    assert.equal(status.isOrganized, true);
+    assert.equal(status.needsReview, false);
+    assert.ok(status.reasons.length > 0);
   });
 });

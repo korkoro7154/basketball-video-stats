@@ -53,6 +53,7 @@ interface MatchOrganizerPanelProps {
   activeGame: GameRecord;
   matches: GameMatch[];
   onCommitMatches: (nextMatches: GameMatch[]) => void;
+  onToggleOrganized: (organized: boolean) => void;
   onNotify: (message: string, tone?: 'success' | 'info' | 'danger') => void;
 }
 
@@ -106,6 +107,7 @@ export function MatchOrganizerPanel({
   activeGame,
   matches,
   onCommitMatches,
+  onToggleOrganized,
   onNotify,
 }: MatchOrganizerPanelProps) {
   const [open, setOpen] = useState(false);
@@ -382,6 +384,9 @@ export function MatchOrganizerPanel({
           <FolderKanban size={15} className="accent-icon" />
           <span>試合と動画の整理（全{matches.length}試合）</span>
         </span>
+        {activeGame.isOrganized && (
+          <span className="match-org-done-badge">整理済み</span>
+        )}
         {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </button>
 
@@ -391,6 +396,29 @@ export function MatchOrganizerPanel({
         </p>
       ) : (
         <div className="match-org-body">
+          <label
+            className={`match-org-done-bar ${
+              activeGame.isOrganized ? 'is-done' : ''
+            }`}
+          >
+            <input
+              type="checkbox"
+              className="match-org-done-check"
+              checked={Boolean(activeGame.isOrganized)}
+              onChange={(e) => onToggleOrganized(e.target.checked)}
+            />
+            <span className="match-org-done-texts">
+              <span className="match-org-done-title">
+                この試合日を「整理済み」にする
+              </span>
+              <span className="match-org-done-sub">
+                {activeGame.isOrganized
+                  ? '整理済み（一括AI整理の対象から自動除外されます）'
+                  : '確認・整理が終わったらチェックを入れてください'}
+              </span>
+            </span>
+          </label>
+
           <div className="row-between">
             <p className="table-helper-text">
               再生リスト内の動画を同じ試合にまとめたり、別の試合へ動かしたりできます（YouTube側は変わりません）。
@@ -708,6 +736,7 @@ export interface BulkMatchOrganizerPanelProps {
     aiMatches: AiOrganizedMatchInput[],
     fetchedTitles?: Record<string, string>
   ) => Promise<{ ok: boolean; beforeCount: number; afterCount: number }>;
+  onToggleGameOrganized: (gameId: string, organized: boolean) => void;
   onSelectGame: (gameId: string) => void;
   onNotify: (message: string, tone?: 'success' | 'info' | 'danger') => void;
 }
@@ -724,6 +753,7 @@ export function BulkMatchOrganizerPanel({
   games,
   activeGameId,
   onApplyAiMatchesForGame,
+  onToggleGameOrganized,
   onSelectGame,
   onNotify,
 }: BulkMatchOrganizerPanelProps) {
@@ -767,6 +797,17 @@ export function BulkMatchOrganizerPanel({
         .map((r) => r.game.id),
     [rows]
   );
+  const organizedCount = useMemo(
+    () => rows.filter((r) => r.status.isOrganized).length,
+    [rows]
+  );
+  const unorganizedSelectableIds = useMemo(
+    () =>
+      rows
+        .filter((r) => r.status.videoCount > 0 && !r.status.isOrganized)
+        .map((r) => r.game.id),
+    [rows]
+  );
 
   const effectiveSelectedIds = useMemo(
     () =>
@@ -786,6 +827,14 @@ export function BulkMatchOrganizerPanel({
       ? effectiveSelectedIds.filter((id) => id !== gameId)
       : [...effectiveSelectedIds, gameId];
     setCustomSelectedIds(next);
+  };
+
+  const handleToggleOrganizedInBulk = (gameId: string, organized: boolean) => {
+    if (running) return;
+    onToggleGameOrganized(gameId, organized);
+    if (organized && selectedIdSet.has(gameId)) {
+      setCustomSelectedIds(effectiveSelectedIds.filter((id) => id !== gameId));
+    }
   };
 
   const handleRequestCancel = () => {
@@ -975,9 +1024,14 @@ export function BulkMatchOrganizerPanel({
           </div>
 
           <div className="bulk-org-toolbar">
-            <span className="bulk-org-count">
-              選択中: {effectiveSelectedIds.length} / 対象{selectableIds.length}日
-            </span>
+            <div className="bulk-org-summary-meta">
+              <span className="bulk-org-count">
+                選択中: {effectiveSelectedIds.length} / 対象{selectableIds.length}日
+              </span>
+              <span className="bulk-org-organized-count">
+                整理済み: {organizedCount} / 全{rows.length}日
+              </span>
+            </div>
             <div className="bulk-org-quick-actions">
               <button
                 type="button"
@@ -986,6 +1040,14 @@ export function BulkMatchOrganizerPanel({
                 onClick={() => setCustomSelectedIds(defaultCandidateIds)}
               >
                 未整理候補だけ
+              </button>
+              <button
+                type="button"
+                className="bulk-org-quick-btn"
+                disabled={running || unorganizedSelectableIds.length === 0}
+                onClick={() => setCustomSelectedIds(unorganizedSelectableIds)}
+              >
+                未整理すべて
               </button>
               <button
                 type="button"
@@ -1024,8 +1086,8 @@ export function BulkMatchOrganizerPanel({
                 <div
                   key={game.id}
                   className={`bulk-org-item ${checked ? 'is-selected' : ''} ${
-                    isEmpty ? 'is-empty' : ''
-                  }`}
+                    status.isOrganized ? 'is-organized' : ''
+                  } ${isEmpty ? 'is-empty' : ''}`}
                 >
                   <div className="bulk-org-item-head">
                     <input
@@ -1043,6 +1105,10 @@ export function BulkMatchOrganizerPanel({
                         {isEmpty ? (
                           <span className="bulk-org-state-badge is-empty">
                             動画なし
+                          </span>
+                        ) : status.isOrganized ? (
+                          <span className="bulk-org-state-badge is-done">
+                            整理済み
                           </span>
                         ) : status.needsReview ? (
                           <span className="bulk-org-state-badge is-review">
@@ -1071,7 +1137,7 @@ export function BulkMatchOrganizerPanel({
                         )}
                       </div>
 
-                      {status.reasons.length > 0 && (
+                      {!status.isOrganized && status.reasons.length > 0 && (
                         <div className="bulk-org-reasons">
                           {status.reasons.map((reason) => (
                             <span key={reason} className="bulk-org-reason-chip">
@@ -1082,15 +1148,36 @@ export function BulkMatchOrganizerPanel({
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      className={`bulk-org-open-btn ${
-                        game.id === activeGameId ? 'is-current' : ''
-                      }`}
-                      onClick={() => onSelectGame(game.id)}
-                    >
-                      開く
-                    </button>
+                    <div className="bulk-org-item-actions">
+                      <label
+                        className={`bulk-org-done-toggle ${
+                          status.isOrganized ? 'is-done' : ''
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={status.isOrganized}
+                          disabled={running}
+                          aria-label={`${game.date} ${game.title}を整理済みにする`}
+                          onChange={(e) =>
+                            handleToggleOrganizedInBulk(
+                              game.id,
+                              e.target.checked
+                            )
+                          }
+                        />
+                        <span>整理済み</span>
+                      </label>
+                      <button
+                        type="button"
+                        className={`bulk-org-open-btn ${
+                          game.id === activeGameId ? 'is-current' : ''
+                        }`}
+                        onClick={() => onSelectGame(game.id)}
+                      >
+                        開く
+                      </button>
+                    </div>
                   </div>
 
                   {result && (
