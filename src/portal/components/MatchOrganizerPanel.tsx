@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertCircle,
   ArrowDown,
   ArrowDownToLine,
   ArrowUp,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Film,
@@ -11,6 +13,7 @@ import {
   Loader2,
   Plus,
   RotateCcw,
+  ShieldCheck,
   Sparkles,
   Trash2,
 } from 'lucide-react';
@@ -21,16 +24,20 @@ import {
   applyFetchedYouTubeTitlesToMatches,
   formatMatchClipSummary,
   formatMatchDisplayTitle,
+  getGameMatches,
+  inspectGameOrganizationStatus,
   mergeMatchWithPrevious,
   moveClipToMatch,
   moveMatchStatsToTarget,
   reorderClipInMatch,
 } from '../utils/matches';
+import type { AiOrganizedMatchInput } from '../utils/matches';
 import { computeMatchSummary } from '../utils/stats';
 import {
   fetchYouTubeVideoTitles,
   organizeMatchesWithAi,
 } from '../services/matchOrganizeApi';
+import './MatchOrganizerPanel.css';
 
 const YT_TOKEN_STORAGE_KEY = 'portal_yt_access_token';
 
@@ -687,6 +694,455 @@ export function MatchOrganizerPanel({
               </div>
             );
           })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export interface BulkMatchOrganizerPanelProps {
+  games: GameRecord[];
+  activeGameId?: string;
+  onApplyAiMatchesForGame: (
+    gameId: string,
+    aiMatches: AiOrganizedMatchInput[],
+    fetchedTitles?: Record<string, string>
+  ) => Promise<{ ok: boolean; beforeCount: number; afterCount: number }>;
+  onSelectGame: (gameId: string) => void;
+  onNotify: (message: string, tone?: 'success' | 'info' | 'danger') => void;
+}
+
+interface BulkRowResult {
+  state: 'processing' | 'done' | 'error' | 'skipped';
+  message: string;
+}
+
+/**
+ * Collapsible panel for selectively batch-running AI video/match organization across past game days.
+ */
+export function BulkMatchOrganizerPanel({
+  games,
+  activeGameId,
+  onApplyAiMatchesForGame,
+  onSelectGame,
+  onNotify,
+}: BulkMatchOrganizerPanelProps) {
+  const [open, setOpen] = useState(false);
+  const [customSelectedIds, setCustomSelectedIds] = useState<string[] | null>(
+    null
+  );
+  const [running, setRunning] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [progressText, setProgressText] = useState('');
+  const [rowResults, setRowResults] = useState<Record<string, BulkRowResult>>(
+    {}
+  );
+  const cancelRequestedRef = useRef(false);
+
+  const rows = useMemo(
+    () =>
+      games.map((game) => ({
+        game,
+        status: inspectGameOrganizationStatus(game),
+      })),
+    [games]
+  );
+
+  const selectableIds = useMemo(
+    () => rows.filter((r) => r.status.videoCount > 0).map((r) => r.game.id),
+    [rows]
+  );
+  const selectableIdSet = useMemo(
+    () => new Set(selectableIds),
+    [selectableIds]
+  );
+  const defaultCandidateIds = useMemo(
+    () => rows.filter((r) => r.status.needsReview).map((r) => r.game.id),
+    [rows]
+  );
+  const noStatsIds = useMemo(
+    () =>
+      rows
+        .filter((r) => r.status.videoCount > 0 && !r.status.hasStats)
+        .map((r) => r.game.id),
+    [rows]
+  );
+
+  const effectiveSelectedIds = useMemo(
+    () =>
+      (customSelectedIds ?? defaultCandidateIds).filter((id) =>
+        selectableIdSet.has(id)
+      ),
+    [customSelectedIds, defaultCandidateIds, selectableIdSet]
+  );
+  const selectedIdSet = useMemo(
+    () => new Set(effectiveSelectedIds),
+    [effectiveSelectedIds]
+  );
+
+  const handleToggleGameId = (gameId: string) => {
+    if (running || !selectableIdSet.has(gameId)) return;
+    const next = selectedIdSet.has(gameId)
+      ? effectiveSelectedIds.filter((id) => id !== gameId)
+      : [...effectiveSelectedIds, gameId];
+    setCustomSelectedIds(next);
+  };
+
+  const handleRequestCancel = () => {
+    cancelRequestedRef.current = true;
+    setCancelling(true);
+  };
+
+  const handleRunBulkAiOrganize = async () => {
+    if (running || effectiveSelectedIds.length === 0) return;
+
+    const targetRows = rows.filter((r) => selectedIdSet.has(r.game.id));
+    if (targetRows.length === 0) return;
+
+    cancelRequestedRef.current = false;
+    setRunning(true);
+    setCancelling(false);
+    setProgressText('');
+    setRowResults({});
+
+    const succeededIds = new Set<string>();
+    let successCount = 0;
+    let failedCount = 0;
+    let skippedCount = 0;
+    let cancelled = false;
+    const accessToken = getStoredYouTubeAccessToken() || undefined;
+
+    for (let i = 0; i < targetRows.length; i += 1) {
+      if (cancelRequestedRef.current) {
+        cancelled = true;
+        break;
+      }
+
+      const { game } = targetRows[i];
+      setProgressText(
+        `AI整理中... (${i + 1} / ${targetRows.length}日目：${game.date} ${game.title})`
+      );
+      setRowResults((prev) => ({
+        ...prev,
+        [game.id]: { state: 'processing', message: '整理中...' },
+      }));
+
+      try {
+        const matches = getGameMatches(game);
+        const clips = matches.flatMap((m) => m.videos);
+        if (clips.length === 0) {
+          skippedCount += 1;
+          setRowResults((prev) => ({
+            ...prev,
+            [game.id]: {
+              state: 'skipped',
+              message: 'スキップ（動画なし）',
+            },
+          }));
+          continue;
+        }
+
+        const res = await organizeMatchesWithAi({
+          gameTitle: game.title,
+          gameDate: game.date,
+          defaultOpponent: game.opponent,
+          clips: clips.map((c) => ({
+            id: c.id,
+            label: c.label,
+            youtubeId: c.youtubeId,
+            youtubeTitle: c.youtubeTitle,
+          })),
+          youtubeAccessToken: accessToken,
+        });
+
+        if (res.matches.length === 0) {
+          failedCount += 1;
+          setRowResults((prev) => ({
+            ...prev,
+            [game.id]: {
+              state: 'error',
+              message: 'エラー: AIで整理できる構成が見つかりませんでした',
+            },
+          }));
+          continue;
+        }
+
+        const applied = await onApplyAiMatchesForGame(
+          game.id,
+          res.matches,
+          res.fetchedTitles
+        );
+        if (!applied.ok) {
+          failedCount += 1;
+          setRowResults((prev) => ({
+            ...prev,
+            [game.id]: {
+              state: 'error',
+              message: 'エラー: 整理結果の保存に失敗しました',
+            },
+          }));
+          continue;
+        }
+
+        succeededIds.add(game.id);
+        successCount += 1;
+        const resultLabel =
+          applied.beforeCount !== applied.afterCount
+            ? `整理完了（${applied.beforeCount}試合 → ${applied.afterCount}試合）`
+            : `整理完了（${applied.afterCount}試合・ラベル更新）`;
+        setRowResults((prev) => ({
+          ...prev,
+          [game.id]: { state: 'done', message: resultLabel },
+        }));
+      } catch (err: unknown) {
+        failedCount += 1;
+        const msg =
+          err instanceof Error ? err.message : 'AI自動整理に失敗しました';
+        setRowResults((prev) => ({
+          ...prev,
+          [game.id]: { state: 'error', message: `エラー: ${msg}` },
+        }));
+      }
+
+      if (i < targetRows.length - 1 && !cancelRequestedRef.current) {
+        await new Promise((resolve) => window.setTimeout(resolve, 400));
+      }
+    }
+
+    setRunning(false);
+    setCancelling(false);
+    setProgressText('');
+
+    if (succeededIds.size > 0) {
+      setCustomSelectedIds(
+        effectiveSelectedIds.filter((id) => !succeededIds.has(id))
+      );
+    }
+
+    const parts: string[] = [];
+    if (successCount > 0) parts.push(`${successCount}日分を整理`);
+    if (failedCount > 0) parts.push(`${failedCount}日分失敗`);
+    if (skippedCount > 0) parts.push(`${skippedCount}日分スキップ`);
+
+    if (cancelled) {
+      onNotify(
+        `途中で中断しました（${parts.join(' / ') || '完了なし'}）`,
+        failedCount > 0 ? 'danger' : 'info'
+      );
+    } else if (failedCount > 0 && successCount === 0) {
+      onNotify(`一括AI整理に失敗しました（${parts.join(' / ')}）`, 'danger');
+    } else if (failedCount > 0) {
+      onNotify(`一括AI整理完了（${parts.join(' / ')}）`, 'info');
+    } else {
+      onNotify(`一括AI整理完了：${parts.join(' / ')}`, 'success');
+    }
+  };
+
+  return (
+    <section className="portal-card">
+      <button
+        type="button"
+        className="ocr-toggle-table-btn"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="match-org-toggle-left">
+          <Sparkles size={15} className="accent-icon" />
+          <span>過去の試合日をまとめてAI整理</span>
+        </span>
+        <span
+          className={`bulk-org-badge ${
+            defaultCandidateIds.length === 0 ? 'is-clean' : ''
+          }`}
+        >
+          {defaultCandidateIds.length > 0
+            ? `未整理候補 ${defaultCandidateIds.length}日`
+            : `全${games.length}日`}
+        </span>
+        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+      </button>
+
+      {!open ? (
+        <p className="card-date top-gap">
+          バラバラな過去の試合日だけチェックして、ボタン1回でまとめてAI整理できます（整頓済みの日やスタッツは守れます）
+        </p>
+      ) : (
+        <div className="match-org-body">
+          <div className="bulk-org-safety-note">
+            <ShieldCheck size={16} />
+            <span>
+              すでに登録したスコア・スタッツは消さずに守ります。先に試したいときは画面上の「テストモード」をONにしてからお試しください。
+            </span>
+          </div>
+
+          <div className="bulk-org-toolbar">
+            <span className="bulk-org-count">
+              選択中: {effectiveSelectedIds.length} / 対象{selectableIds.length}日
+            </span>
+            <div className="bulk-org-quick-actions">
+              <button
+                type="button"
+                className="bulk-org-quick-btn"
+                disabled={running || defaultCandidateIds.length === 0}
+                onClick={() => setCustomSelectedIds(defaultCandidateIds)}
+              >
+                未整理候補だけ
+              </button>
+              <button
+                type="button"
+                className="bulk-org-quick-btn"
+                disabled={running || noStatsIds.length === 0}
+                onClick={() => setCustomSelectedIds(noStatsIds)}
+              >
+                スタッツ未記録のみ
+              </button>
+              <button
+                type="button"
+                className="bulk-org-quick-btn"
+                disabled={running || selectableIds.length === 0}
+                onClick={() => setCustomSelectedIds(selectableIds)}
+              >
+                全選択
+              </button>
+              <button
+                type="button"
+                className="bulk-org-quick-btn"
+                disabled={running || effectiveSelectedIds.length === 0}
+                onClick={() => setCustomSelectedIds([])}
+              >
+                解除
+              </button>
+            </div>
+          </div>
+
+          <div className="bulk-org-list">
+            {rows.map(({ game, status }) => {
+              const isEmpty = status.videoCount === 0;
+              const checked = !isEmpty && selectedIdSet.has(game.id);
+              const result = rowResults[game.id];
+
+              return (
+                <div
+                  key={game.id}
+                  className={`bulk-org-item ${checked ? 'is-selected' : ''} ${
+                    isEmpty ? 'is-empty' : ''
+                  }`}
+                >
+                  <div className="bulk-org-item-head">
+                    <input
+                      type="checkbox"
+                      className="bulk-org-check"
+                      checked={checked}
+                      disabled={isEmpty || running}
+                      aria-label={`${game.date} ${game.title}を選択`}
+                      onChange={() => handleToggleGameId(game.id)}
+                    />
+                    <div className="bulk-org-item-main">
+                      <div className="bulk-org-title-row">
+                        <span className="bulk-org-date">{game.date}</span>
+                        <span className="bulk-org-title">{game.title}</span>
+                        {isEmpty ? (
+                          <span className="bulk-org-state-badge is-empty">
+                            動画なし
+                          </span>
+                        ) : status.needsReview ? (
+                          <span className="bulk-org-state-badge is-review">
+                            要整理候補
+                          </span>
+                        ) : (
+                          <span className="bulk-org-state-badge is-ok">
+                            整頓済みっぽい
+                          </span>
+                        )}
+                        {status.hasStats && (
+                          <span className="bulk-org-stats-badge">
+                            スタッツあり
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="bulk-org-meta-line">
+                        <span>
+                          全{status.matchCount}試合・動画{status.videoCount}本
+                        </span>
+                        {status.matchPreview && (
+                          <span className="bulk-org-preview">
+                            {status.matchPreview}
+                          </span>
+                        )}
+                      </div>
+
+                      {status.reasons.length > 0 && (
+                        <div className="bulk-org-reasons">
+                          {status.reasons.map((reason) => (
+                            <span key={reason} className="bulk-org-reason-chip">
+                              {reason}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      className={`bulk-org-open-btn ${
+                        game.id === activeGameId ? 'is-current' : ''
+                      }`}
+                      onClick={() => onSelectGame(game.id)}
+                    >
+                      開く
+                    </button>
+                  </div>
+
+                  {result && (
+                    <div
+                      className={`bulk-org-result-row is-${result.state}`}
+                    >
+                      {result.state === 'processing' && (
+                        <Loader2 size={13} className="ocr-spin" />
+                      )}
+                      {result.state === 'done' && <CheckCircle2 size={13} />}
+                      {(result.state === 'error' ||
+                        result.state === 'skipped') && (
+                        <AlertCircle size={13} />
+                      )}
+                      <span>{result.message}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="bulk-org-footer">
+            {running ? (
+              <div className="bulk-org-running-bar">
+                <span className="bulk-org-running-text">
+                  <Loader2 size={14} className="ocr-spin" />
+                  <span>{progressText || 'AI整理を実行中...'}</span>
+                </span>
+                <button
+                  type="button"
+                  className="bulk-org-cancel-btn"
+                  disabled={cancelling}
+                  onClick={handleRequestCancel}
+                >
+                  {cancelling ? '中断中...' : 'ここで中断'}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="btn-accent btn-block"
+                disabled={effectiveSelectedIds.length === 0}
+                onClick={() => void handleRunBulkAiOrganize()}
+              >
+                <Sparkles size={16} />
+                {effectiveSelectedIds.length > 0
+                  ? `選択した ${effectiveSelectedIds.length} 日分をまとめてAI整理`
+                  : '整理する試合日をチェックしてください'}
+              </button>
+            )}
+          </div>
         </div>
       )}
     </section>

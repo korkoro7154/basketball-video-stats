@@ -817,3 +817,122 @@ export function applyAiOrganizedMatches(
 
   return result;
 }
+
+export interface GameOrganizationStatus {
+  matchCount: number;
+  videoCount: number;
+  hasStats: boolean;
+  missingYoutubeTitleCount: number;
+  needsReview: boolean;
+  reasons: string[];
+  matchPreview: string;
+}
+
+function hasQuarterOrderOrDuplicateIssue(match: GameMatch): boolean {
+  let prevQuarter = -1;
+  const nonHalfQuarterCounts = new Map<number, number>();
+
+  for (const clip of match.videos) {
+    const info = detectQuarterInfo(clip.label);
+    if (info.quarterNum === null) continue;
+    if (info.quarterNum < prevQuarter) {
+      return true;
+    }
+    prevQuarter = info.quarterNum;
+
+    if (!/前半|後半/.test(clip.label)) {
+      const nextCount = (nonHalfQuarterCounts.get(info.quarterNum) ?? 0) + 1;
+      if (nextCount >= 2) {
+        return true;
+      }
+      nonHalfQuarterCounts.set(info.quarterNum, nextCount);
+    }
+  }
+  return false;
+}
+
+/** Inspects a GameRecord and flags days that likely need AI video/match reorganization. */
+export function inspectGameOrganizationStatus(
+  game: GameRecord
+): GameOrganizationStatus {
+  const matches = getGameMatches(game);
+  const allClips = matches.flatMap((m) => m.videos);
+  const videoCount = allClips.length;
+  const hasStats = matches.some((m) => matchHasStats(m));
+  const missingYoutubeTitleCount = allClips.filter(
+    (c) => !c.youtubeTitle && Boolean(c.youtubeId) && !c.youtubeId.startsWith('demo_')
+  ).length;
+
+  let matchPreview = '';
+  if (!(videoCount === 0 && matches.length <= 1)) {
+    const head = matches
+      .slice(0, 4)
+      .map((m) => `${formatMatchDisplayTitle(m)}(${m.videos.length}本)`)
+      .join(' / ');
+    matchPreview =
+      matches.length > 4 ? `${head} 他${matches.length - 4}試合` : head;
+  }
+
+  const reasons: string[] = [];
+  if (videoCount > 0) {
+    const maxClipsInOneMatch = Math.max(
+      0,
+      ...matches.map((m) => m.videos.length)
+    );
+    if (maxClipsInOneMatch >= 5) {
+      reasons.push(`1試合に${maxClipsInOneMatch}本集中`);
+    }
+
+    const hasPlaceholderLabel = allClips.some((c) => {
+      const lbl = c.label.trim();
+      return (
+        /^動画\s*\d+$/.test(lbl) ||
+        /^clip\s*\d*$/i.test(lbl) ||
+        (videoCount >= 2 && lbl === '試合動画')
+      );
+    });
+    if (hasPlaceholderLabel) {
+      reasons.push('仮ラベルあり');
+    }
+
+    if (missingYoutubeTitleCount > 0) {
+      reasons.push(`元タイトル未取得(${missingYoutubeTitleCount}本)`);
+    }
+
+    const hasPlaceholderOpponent = matches.some((m) => {
+      const opp = m.opponent.trim();
+      return !opp || opp === '対戦相手' || opp === '練習試合';
+    });
+    if (hasPlaceholderOpponent) {
+      reasons.push('対戦相手が未設定');
+    }
+
+    const isFragmentedByQuarter =
+      matches.length >= 4 &&
+      matches.every((m) => m.videos.length === 1) &&
+      matches.filter(
+        (m) => detectQuarterInfo(m.videos[0].label).quarterNum !== null
+      ).length >= 3;
+    if (isFragmentedByQuarter) {
+      reasons.push('1本ずつ細切れ');
+    }
+
+    if (matches.some((m) => hasQuarterOrderOrDuplicateIssue(m))) {
+      reasons.push('クォーター順ズレ');
+    }
+
+    if (matches.length > 1 && matches.some((m) => m.videos.length === 0)) {
+      reasons.push('空の試合枠あり');
+    }
+  }
+
+  return {
+    matchCount: matches.length,
+    videoCount,
+    hasStats,
+    missingYoutubeTitleCount,
+    needsReview: videoCount > 0 && reasons.length > 0,
+    reasons,
+    matchPreview,
+  };
+}
