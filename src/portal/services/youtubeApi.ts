@@ -84,12 +84,12 @@ function buildYouTubeError(status: number, bodyText: string): Error {
   }
   if (status === 401) {
     return new Error(
-      'YouTube連携の有効期限が切れました。もう一度「部活のYouTubeアカウントを連携」を押してください。'
+      'YouTube認証の有効期限が切れました。もう一度読み込みをお試しください。'
     );
   }
   if (status === 404 || lower.includes('playlistnotfound')) {
     return new Error(
-      '再生リストが見つかりませんでした。URLが正しいか、「限定公開」または「公開」設定になっているか確認してください（非公開リストは上のアカウント連携から取り込めます）。'
+      '再生リストが見つかりませんでした。URLが正しいか、「限定公開」または「公開」設定になっているか確認してください。'
     );
   }
   if (status === 403) {

@@ -7,7 +7,6 @@ import {
   Layers,
   Link2,
   ListVideo,
-  PlaySquare,
   Plus,
   RefreshCw,
   X,
@@ -21,7 +20,6 @@ import type {
 } from '../types';
 import { requestYouTubeAccessToken } from '../firebase';
 import {
-  fetchMyYouTubePlaylists,
   fetchPlaylistById,
   fetchPlaylistsByIds,
   fetchPlaylistVideos,
@@ -359,23 +357,10 @@ export function YouTubeImportPanel({
   const [summaryImportProgress, setSummaryImportProgress] = useState('');
   const [aiFallbackNotice, setAiFallbackNotice] = useState('');
 
-  // 1. YouTubeアカウント連携状態
+  // 裏側でのYouTube認証・AI整理共通設定
   const [ytToken, setYtToken] = useState(() =>
     readSessionItem(YT_TOKEN_STORAGE_KEY)
   );
-  const [ytAccountEmail, setYtAccountEmail] = useState(() =>
-    readSessionItem(YT_EMAIL_STORAGE_KEY)
-  );
-  const [playlists, setPlaylists] = useState<YouTubePlaylistSummary[]>([]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [kindOverrides, setKindOverrides] = useState<
-    Record<string, 'game' | 'practice'>
-  >({});
-  const [loadingSync, setLoadingSync] = useState(false);
-  const [importingBatch, setImportingBatch] = useState(false);
-  const [importProgress, setImportProgress] = useState('');
-  const [apiError, setApiError] = useState('');
-  const [showApiGuide, setShowApiGuide] = useState(false);
   const [autoOrganizeWithAi, setAutoOrganizeWithAi] = useState(true);
 
   // 2. 再生リストURLまとめて一括取り込み（文章や表ごと貼り付けOK）
@@ -469,13 +454,6 @@ export function YouTubeImportPanel({
     };
   };
 
-  const applyFetchedPlaylists = (items: YouTubePlaylistSummary[]) => {
-    const { nextKinds, initialSelected } = buildSelectionDefaults(items);
-    setPlaylists(items);
-    setKindOverrides(nextKinds);
-    setSelectedIds(initialSelected);
-  };
-
   const ensureYouTubeAccessToken = async (
     forceRefresh = false
   ): Promise<string> => {
@@ -488,58 +466,9 @@ export function YouTubeImportPanel({
     }
     const { accessToken, accountEmail } = await requestYouTubeAccessToken();
     setYtToken(accessToken);
-    setYtAccountEmail(accountEmail);
     writeSessionItem(YT_TOKEN_STORAGE_KEY, accessToken);
     writeSessionItem(YT_EMAIL_STORAGE_KEY, accountEmail);
     return accessToken;
-  };
-
-  const handleConnectYouTubeAccount = async () => {
-    setLoadingSync(true);
-    setApiError('');
-    try {
-      const accessToken = await ensureYouTubeAccessToken(true);
-      const list = await fetchMyYouTubePlaylists(accessToken);
-      applyFetchedPlaylists(list);
-      if (list.length === 0) {
-        onNotify('このYouTubeアカウントに再生リストが見つかりませんでした', 'info');
-      } else {
-        onNotify(`再生リスト ${list.length}件を読み込みました`, 'success');
-      }
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : 'YouTube連携に失敗しました。';
-      setApiError(msg);
-      if (msg.includes('YouTube Data API v3')) {
-        setShowApiGuide(true);
-      }
-    } finally {
-      setLoadingSync(false);
-    }
-  };
-
-  const handleReloadMyPlaylists = async () => {
-    if (!ytToken) {
-      await handleConnectYouTubeAccount();
-      return;
-    }
-    setLoadingSync(true);
-    setApiError('');
-    try {
-      const list = await fetchMyYouTubePlaylists(ytToken);
-      applyFetchedPlaylists(list);
-      onNotify(`再生リスト ${list.length}件を再読み込みしました`, 'success');
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : '再生リストの再読み込みに失敗しました。';
-      if (msg.includes('有効期限が切れました')) {
-        clearSessionAuth();
-        setYtToken('');
-      }
-      setApiError(msg);
-    } finally {
-      setLoadingSync(false);
-    }
   };
 
   const notifyBatchImportOutcome = (params: {
@@ -1007,24 +936,10 @@ export function YouTubeImportPanel({
       const msg =
         err instanceof Error ? err.message : '再生リストの取り込みに失敗しました。';
       setError(msg);
-      if (msg.includes('YouTube Data API v3')) {
-        setShowApiGuide(true);
-      }
     } finally {
       setImporting(false);
       setProgress('');
     }
-  };
-
-  const handleBatchImportSelected = async () => {
-    const targets = playlists.filter((pl) => selectedIds.includes(pl.id));
-    await importPlaylistSelection({
-      targets,
-      overrides: kindOverrides,
-      setImporting: setImportingBatch,
-      setProgress: setImportProgress,
-      setError: setApiError,
-    });
   };
 
   const handleBulkPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1104,9 +1019,6 @@ export function YouTubeImportPanel({
           ? err.message
           : '再生リストの読み込みに失敗しました。';
       setBulkError(msg);
-      if (msg.includes('YouTube Data API v3')) {
-        setShowApiGuide(true);
-      }
     } finally {
       setLoadingBulkFetch(false);
     }
@@ -1230,9 +1142,6 @@ export function YouTubeImportPanel({
           ? err.message
           : 'まとめ再生リストの読み込みに失敗しました。';
       setSummaryError(msg);
-      if (msg.includes('YouTube Data API v3')) {
-        setShowApiGuide(true);
-      }
     } finally {
       setLoadingSummary(false);
       setSummaryProgress('');
@@ -1869,7 +1778,7 @@ export function YouTubeImportPanel({
       )}
 
       {/* ================================================= */}
-      {/* ⓪ まとめ再生リストから日付ごとに分けて取り込み    */}
+      {/* ① まとめ再生リストから日付ごとに取り込み           */}
       {/* ================================================= */}
       <section ref={summarySectionRef} className="portal-card">
         <div className="block-title-row">
@@ -2228,118 +2137,6 @@ export function YouTubeImportPanel({
       </section>
 
       {/* ================================================= */}
-      {/* ① YouTubeアカウント連携（全再生リスト一括取り込み） */}
-      {/* ================================================= */}
-      <section className="portal-card">
-        <div className="block-title-row">
-          <PlaySquare size={18} className="accent-icon" />
-          <h3>部活YouTubeから再生リスト一括取り込み</h3>
-        </div>
-        <p className="table-helper-text">
-          部活のYouTubeアカウントを連携すると、試合ごとに分けている再生リストと中の動画（1Q〜4Qなど）をまとめて取り込めます。
-        </p>
-
-        {!ytToken ? (
-          <button
-            type="button"
-            className="btn-accent btn-block"
-            disabled={loadingSync}
-            onClick={() => void handleConnectYouTubeAccount()}
-          >
-            <ListVideo size={17} />
-            {loadingSync
-              ? 'YouTubeに接続中...'
-              : '部活のYouTubeアカウントを連携して取得'}
-          </button>
-        ) : (
-          <div className="yt-connected-bar">
-            <div className="yt-connected-info">
-              <span className="yt-connected-badge">連携済み</span>
-              <span className="yt-connected-email">
-                {ytAccountEmail || 'YouTubeアカウント'}
-              </span>
-            </div>
-            <div className="yt-connected-actions">
-              <button
-                type="button"
-                className="btn-soft-sm"
-                disabled={loadingSync}
-                onClick={() => void handleReloadMyPlaylists()}
-              >
-                <RefreshCw size={13} /> 再読込
-              </button>
-              <button
-                type="button"
-                className="btn-ghost btn-sm"
-                disabled={loadingSync}
-                onClick={() => void handleConnectYouTubeAccount()}
-              >
-                変更
-              </button>
-            </div>
-          </div>
-        )}
-
-        {apiError && (
-          <div className="portal-auth-error">
-            <AlertCircle size={16} />
-            <span>{apiError}</span>
-          </div>
-        )}
-
-        <div>
-          <button
-            type="button"
-            className="yt-guide-toggle"
-            onClick={() => setShowApiGuide((v) => !v)}
-          >
-            <span>初回のみ：YouTube Data API v3 の有効化手順</span>
-            {showApiGuide ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-          </button>
-
-          {showApiGuide && (
-            <ol className="yt-guide-steps">
-              <li>
-                Firebase画面の「プロジェクトの設定」右上にある「Google Cloud で表示」を開きます。
-              </li>
-              <li>
-                上の検索欄で「YouTube Data API v3」を検索して開き、青い「有効にする」を押します。
-              </li>
-              <li>
-                連携時に「Googleで確認されていません」が出た場合は、Google Cloudの「APIとサービス → OAuth同意画面 → 対象（テストユーザー）」に部活のYouTubeアドレスを追加します。
-              </li>
-            </ol>
-          )}
-        </div>
-
-        {playlists.length > 0 && (
-          <PlaylistChecklistBox
-            items={playlists}
-            selectedIds={selectedIds}
-            kindOverrides={kindOverrides}
-            data={data}
-            importing={importingBatch}
-            progressText={importProgress}
-            autoOrganizeWithAi={autoOrganizeWithAi}
-            onToggleAutoOrganize={setAutoOrganizeWithAi}
-            onSelectAll={() => setSelectedIds(playlists.map((p) => p.id))}
-            onClearSelection={() => setSelectedIds([])}
-            onToggleId={(id) =>
-              setSelectedIds((prev) =>
-                prev.includes(id)
-                  ? prev.filter((item) => item !== id)
-                  : [...prev, id]
-              )
-            }
-            onChangeKind={(id, kind) =>
-              setKindOverrides((prev) => ({ ...prev, [id]: kind }))
-            }
-            onOpenAsSummary={handleOpenPlaylistAsSummary}
-            onImport={() => void handleBatchImportSelected()}
-          />
-        )}
-      </section>
-
       {/* ================================================= */}
       {/* ② 再生リストURLをまとめて一括取り込み             */}
       {/* ================================================= */}
