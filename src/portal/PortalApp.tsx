@@ -481,7 +481,7 @@ export function PortalApp() {
       <header className={`portal-header ${sandboxActive ? 'is-sandbox' : ''}`}>
         <div className="portal-header-inner">
           <div className="portal-brand">
-            <span className="brand-ball">🏀</span>
+            <img src="/icon-192.png" alt="" className="brand-logo-img" />
             <div>
               <div className="brand-title">{data.teamName}</div>
               <div className="brand-sub-row">
