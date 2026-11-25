@@ -41,12 +41,14 @@ import {
   hasNonEmptyManualBox,
 } from '../utils/stats';
 import {
+  applyAiOrganizedMatches,
   createMatchId,
   formatMatchClipSummary,
   formatMatchDisplayTitle,
   getGameMatches,
   syncGameFromMatches,
 } from '../utils/matches';
+import type { AiOrganizedMatchInput } from '../utils/matches';
 import { formatSeconds } from '../utils/youtube';
 import {
   mergeBulkRosterPlayers,
@@ -55,7 +57,10 @@ import {
 import { YouTubeImportPanel } from './YouTubeImportPanel';
 import { StatsScreenshotImporter } from './StatsScreenshotImporter';
 import type { OcrSaveBatchPayload } from './StatsScreenshotImporter';
-import { MatchOrganizerPanel } from './MatchOrganizerPanel';
+import {
+  BulkMatchOrganizerPanel,
+  MatchOrganizerPanel,
+} from './MatchOrganizerPanel';
 
 interface AdminViewProps {
   data: PortalData;
@@ -510,6 +515,37 @@ export function AdminView({
           : g
       ),
     }));
+  };
+
+  const handleApplyAiMatchesForGame = async (
+    gameId: string,
+    aiMatches: AiOrganizedMatchInput[],
+    fetchedTitles?: Record<string, string>
+  ): Promise<{ ok: boolean; beforeCount: number; afterCount: number }> => {
+    let beforeCount = 0;
+    let afterCount = 0;
+    const ok = await onUpdateData((prev) => {
+      const target = prev.games.find((g) => g.id === gameId);
+      if (!target) return prev;
+      const currentMatches = getGameMatches(target);
+      beforeCount = currentMatches.length;
+      const nextMatches = applyAiOrganizedMatches(
+        currentMatches,
+        aiMatches,
+        target.opponent,
+        fetchedTitles
+      );
+      afterCount = nextMatches.length;
+      return {
+        ...prev,
+        games: prev.games.map((g) =>
+          g.id === gameId
+            ? syncGameFromMatches(g, nextMatches, computeMatchSummary)
+            : g
+        ),
+      };
+    });
+    return { ok, beforeCount, afterCount };
   };
 
   const handleMoveGameStats = async (e: React.FormEvent) => {
@@ -1028,6 +1064,21 @@ export function AdminView({
               activeGame={activeGame}
               matches={activeMatches}
               onCommitMatches={handleCommitMatches}
+              onNotify={onNotify}
+            />
+          )}
+
+          {sortedGames.length > 0 && (
+            <BulkMatchOrganizerPanel
+              games={sortedGames}
+              activeGameId={activeGame?.id}
+              onApplyAiMatchesForGame={handleApplyAiMatchesForGame}
+              onSelectGame={(gameId) => {
+                setSelectedGameId(gameId);
+                setSelectedMatchId('');
+                setSelectedClipId('');
+                setShowMoveStatsForm(false);
+              }}
               onNotify={onNotify}
             />
           )}
