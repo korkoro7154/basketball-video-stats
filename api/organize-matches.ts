@@ -171,7 +171,7 @@ export async function fetchYouTubeTitlesBatch(
   return titles;
 }
 
-function buildOrganizePrompt(input: {
+export function buildOrganizePrompt(input: {
   gameTitle: string;
   gameDate: string;
   defaultOpponent: string;
@@ -189,22 +189,26 @@ function buildOrganizePrompt(input: {
     `Default opponent: "${input.defaultOpponent || '対戦相手'}"`,
     '',
     'Domain rules for this team:',
-    '1. One YouTube playlist represents 1 practice/tournament day with 1 or more separate games (matches) played on that day.',
+    '1. One game day entry (`GameRecord`) holds 1 or more separate games (`matches`) played on that day.',
     '2. Common video patterns:',
-    '   - 1 match split into quarter clips: e.g., 1Q + 2Q, or 1Q〜4Q -> group them into ONE match.',
+    '   - 1 match split into quarter clips: e.g., 1Q + 2Q, or 1Q〜4Q -> group clips of the SAME match (same opponent & teamUnit & game number) into ONE match.',
     '   - Split halves/segments of a quarter: e.g., "1Q前半", "1Q後半", "2Q" -> belong to the SAME match.',
-    '   - A single video containing 2 quarters or a full scrimmage (e.g., "1・2Q", "1-2Q", "フル", "1回戦", "1試合目", "A戦1", "B戦1" with no quarter split) -> treat each full-game clip as its OWN match.',
-    '3. Keep clips in playlist order unless two segments clearly form consecutive parts of the same quarter.',
-    '4. For each match:',
-    '   - "label": concise match name such as "1試合目", "2試合目", "A1試合目", etc. Never return empty.',
-    '   - "teamUnit": detect squad "A", "B", "その他", or "指定なし" if unclear.',
-    '   - "opponent": extract that match\'s opponent school name (especially important on 3校戦 days when A校 and B校 differ); otherwise fall back to Default opponent.',
-    '5. For each clip inside "clips":',
+    '   - Full-game / 2-quarter / numbered scrimmage videos: e.g., "1・2Q", "1-2Q", "フル", "1回戦", "1試合目", "A戦1", "B戦1", or circled game numbers like ①, ②, ③, ..., ⑦ without quarter splits (e.g., "【練習試合】vs正則学園①20261123", "vs正則学園②20261123", "vs正則学園B②20261123") -> treat EACH video as its OWN separate match (1 video = 1 match). Never merge ① and ② into the same match when neither has quarter labels.',
+    '3. Chronological ascending order (CRITICAL):',
+    '   - Even if input clips are listed in reverse/newest-first order (e.g., ② before ①, or 4Q before 1Q), output matches in chronological ascending order (① -> ② -> ③ -> ⑦) and order quarter clips inside each match in ascending order (1Q -> 2Q -> 3Q -> 4Q -> OT, 前半 -> 後半).',
+    '4. Multi-school & squad separation (CRITICAL):',
+    '   - Never merge videos with different opponent schools (e.g., "都小山台" and "正則学園") or different teamUnit values (e.g., "指定なし" and "B") into the same match.',
+    '5. Parsing opponent, squad teamUnit, and match label from titles:',
+    '   - Squad marker attached right after opponent or in brackets: e.g., "vs正則学園B②20261123", "vs都小山台B②20261123", "vs大宮北B20261122", "vs正則学園(B)①", "vs大宮北A戦" -> set "teamUnit" to "A" or "B".',
+    '   - When there is NO A/B squad marker (e.g., "【練習試合】vs正則学園①20261123", "【練習試合】駒場VS都立杉並 20260620 ⑦") -> set "teamUnit" to "指定なし". Do NOT split English acronym school names like "ICU" or "KBA" into A/B.',
+    '   - "opponent": extract ONLY the clean opponent school name after vs/VS/対 (e.g., "正則学園", "都小山台", "大宮北", "都立杉並"), stripping "vs"/"VS", A/B squad markers, circled numbers (①②…), and 8-digit dates (YYYYMMDD like 20261123). Fall back to Default opponent only if unclear.',
+    '   - "label": concise match label such as "1試合目", "2試合目", "7試合目". Do NOT include "A" or "B" in "label" because the UI automatically displays teamUnit in front of label (e.g., teamUnit="B" + label="2試合目" -> "B 2試合目"). Never return empty.',
+    '6. For each clip inside "clips":',
     '   - "id": MUST be copied verbatim from the input clip "id".',
-    '   - "label": short clear quarter/clip label for mobile pills, e.g. "1Q", "2Q", "3Q", "4Q", "1Q前半", "1Q後半", "1-2Q", "前半", "後半", "OT", or "試合動画". Keep it under 12 characters whenever possible.',
-    '6. CRITICAL: Every single input clip "id" must appear EXACTLY ONCE across all output matches (no omissions, no duplicates, no invented IDs).',
+    '   - "label": short clear quarter/clip label for mobile pills, e.g. "1Q", "2Q", "3Q", "4Q", "1Q前半", "1Q後半", "1-2Q", "前半", "後半", "OT", or "試合動画" (use "試合動画" for single full-game clips with no quarter split). Keep it under 12 characters whenever possible.',
+    '7. CRITICAL: Every single input clip "id" must appear EXACTLY ONCE across all output matches (no omissions, no duplicates, no invented IDs).',
     '',
-    'Input clips (in playlist order):',
+    'Input clips:',
     JSON.stringify(input.clips),
   ].join('\n');
 }
@@ -321,7 +325,7 @@ async function callGeminiOrganize(
   };
 }
 
-function sanitizeAiMatches(
+export function sanitizeAiMatches(
   parsed: unknown,
   inputClips: OrganizeMatchesClipInput[],
   defaultOpponent: string

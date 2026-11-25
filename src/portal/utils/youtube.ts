@@ -895,9 +895,11 @@ export function buildMatchesFromParsedEntries(
     defaultOpponent?: string;
     existingMatches?: ReadonlyArray<GameMatch>;
     createId?: (prefix: string) => string;
+    clipIdsByVideoId?: Readonly<Record<string, string>>;
   } = {}
 ): GameMatch[] {
   const createId = options.createId ?? createDefaultId;
+  const clipIdsByVideoId = options.clipIdsByVideoId;
   const fallbackOpponent = options.defaultOpponent?.trim() || '対戦相手';
 
   const countByOppUnit = new Map<string, number>();
@@ -932,7 +934,7 @@ export function buildMatchesFromParsedEntries(
     const qRank = getQuarterSortRank(qLabel);
 
     const clip: GameVideoClip = {
-      id: createId('clip'),
+      id: clipIdsByVideoId?.[video.videoId] || createId('clip'),
       label: qLabel ?? '試合動画',
       youtubeTitle: video.title,
       youtubeId: video.videoId,
@@ -1025,6 +1027,39 @@ function defaultSyncGame(game: GameRecord, matches: GameMatch[]): GameRecord {
   };
 }
 
+export interface SummaryAiOrganizedMatch {
+  label: string;
+  teamUnit: TeamUnit;
+  opponent: string;
+  clips: Array<{ id: string; label: string }>;
+}
+
+/** Finds the best matching existing GameRecord index for a given date/opponent/playlist title. */
+export function findMatchingSummaryGameIndex(
+  games: ReadonlyArray<GameRecord>,
+  date: string,
+  opponents: ReadonlyArray<string>,
+  playlistTitle: string,
+  getMatchesFn: (game: GameRecord) => GameMatch[] = defaultGetMatches
+): number {
+  const sameDateIndices = games
+    .map((g, idx) => (g.date === date ? idx : -1))
+    .filter((idx) => idx !== -1);
+
+  if (sameDateIndices.length === 0) return -1;
+
+  const cleanTitle = playlistTitle.trim();
+  const oppSet = new Set(opponents);
+  return (
+    sameDateIndices.find((idx) => {
+      const g = games[idx];
+      if (cleanTitle && g.notes?.includes(cleanTitle)) return true;
+      if (oppSet.has(g.opponent)) return true;
+      return getMatchesFn(g).some((m) => oppSet.has(m.opponent));
+    }) ?? sameDateIndices[0]
+  );
+}
+
 /**
  * Merges selected date-grouped summary playlist days into `prevGames`,
  * appending only unregistered videos to matching dates and preventing duplicate
@@ -1037,6 +1072,22 @@ export function mergeSummaryDateGroupsIntoGames(params: {
   createId?: (prefix: string) => string;
   getMatchesFn?: (game: GameRecord) => GameMatch[];
   syncGameFn?: (game: GameRecord, matches: GameMatch[]) => GameRecord;
+  clipIdsByVideoId?: Readonly<Record<string, string>>;
+  aiResultsByDate?: Readonly<
+    Record<
+      string,
+      {
+        matches: SummaryAiOrganizedMatch[];
+        fetchedTitles?: Record<string, string>;
+      }
+    >
+  >;
+  applyAiMatchesFn?: (
+    existingMatches: GameMatch[],
+    aiGroups: SummaryAiOrganizedMatch[],
+    defaultOpponent: string,
+    fetchedTitles?: Record<string, string>
+  ) => GameMatch[];
 }): {
   nextGames: GameRecord[];
   addedGames: number;
@@ -1049,6 +1100,7 @@ export function mergeSummaryDateGroupsIntoGames(params: {
   const createId = params.createId ?? createDefaultId;
   const getMatchesFn = params.getMatchesFn ?? defaultGetMatches;
   const syncGameFn = params.syncGameFn ?? defaultSyncGame;
+  const applyAiMatchesFn = params.applyAiMatchesFn;
   const cleanTitle = params.playlistTitle.trim();
 
   const registeredIds = collectRegisteredGameVideoIds(params.prevGames);
@@ -1085,38 +1137,57 @@ export function mergeSummaryDateGroupsIntoGames(params: {
 
     addedVideos += unregistered.length;
 
-    const sameDateIndices = nextGames
-      .map((g, idx) => (g.date === group.date ? idx : -1))
-      .filter((idx) => idx !== -1);
+    const aiResult = params.aiResultsByDate?.[group.date];
+    const hasUsableAi =
+      Boolean(applyAiMatchesFn) &&
+      Boolean(aiResult && aiResult.matches.length > 0);
 
-    if (sameDateIndices.length > 0) {
-      const groupOppSet = new Set(group.opponents);
-      const preferredIdx =
-        sameDateIndices.find((idx) => {
-          const g = nextGames[idx];
-          if (cleanTitle && g.notes?.includes(cleanTitle)) return true;
-          if (groupOppSet.has(g.opponent)) return true;
-          return getMatchesFn(g).some((m) => groupOppSet.has(m.opponent));
-        }) ?? sameDateIndices[0];
+    const preferredIdx = findMatchingSummaryGameIndex(
+      nextGames,
+      group.date,
+      group.opponents,
+      cleanTitle,
+      getMatchesFn
+    );
 
+    if (preferredIdx !== -1) {
       const existing = nextGames[preferredIdx];
       const existingMatches = getMatchesFn(existing);
       const appendedMatches = buildMatchesFromParsedEntries(unregistered, {
         defaultOpponent: existing.opponent,
         existingMatches,
         createId,
+        clipIdsByVideoId: params.clipIdsByVideoId,
       });
-      nextGames[preferredIdx] = syncGameFn(existing, [
-        ...existingMatches,
-        ...appendedMatches,
-      ]);
+      const stagedMatches = [...existingMatches, ...appendedMatches];
+      const finalMatches =
+        hasUsableAi && applyAiMatchesFn && aiResult
+          ? applyAiMatchesFn(
+              stagedMatches,
+              aiResult.matches,
+              existing.opponent,
+              aiResult.fetchedTitles
+            )
+          : stagedMatches;
+      nextGames[preferredIdx] = syncGameFn(existing, finalMatches);
       updatedGames += 1;
       latestGameId = existing.id;
     } else {
-      const matches = buildMatchesFromParsedEntries(unregistered, {
-        defaultOpponent: group.opponents[0] || '対戦相手',
+      const fallbackOpp = group.opponents[0] || '対戦相手';
+      const seedMatches = buildMatchesFromParsedEntries(unregistered, {
+        defaultOpponent: fallbackOpp,
         createId,
+        clipIdsByVideoId: params.clipIdsByVideoId,
       });
+      const matches =
+        hasUsableAi && applyAiMatchesFn && aiResult
+          ? applyAiMatchesFn(
+              seedMatches,
+              aiResult.matches,
+              fallbackOpp,
+              aiResult.fetchedTitles
+            )
+          : seedMatches;
       const distinctOpponents = Array.from(
         new Set(matches.map((m) => m.opponent).filter(Boolean))
       );
