@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  applyAiOrganizedMatches,
+  getGameMatches,
+  syncGameFromMatches,
+} from './matches.ts';
+import { computeMatchSummary } from './stats.ts';
+import {
   buildMatchesFromParsedEntries,
   collectAllRegisteredVideoIds,
   collectRegisteredGameVideoIds,
   collectRegisteredPracticeVideoIds,
+  findMatchingSummaryGameIndex,
   groupPlaylistVideosByDate,
   inferDateFromText,
   inferOpponentFromTitle,
@@ -428,3 +435,224 @@ test('cross-portal collectors and mergeSummaryDateGroupsIntoGames prevent duplic
   assert.equal(thirdMerge.nextGames[0].title, '【下級生】練習試合（11/24）');
   assert.equal(thirdMerge.nextGames[0].youtubePlaylistId, undefined);
 });
+
+test('mergeSummaryDateGroupsIntoGames with applyAiOrganizedMatches protects existing stats and handles partial AI failure', () => {
+  const existingBox = {
+    p1: {
+      playerId: 'p1',
+      pts: 18,
+      fgm: 7,
+      fga: 12,
+      tpm: 2,
+      tpa: 4,
+      ftm: 2,
+      fta: 2,
+      oreb: 1,
+      dreb: 4,
+      ast: 3,
+      stl: 2,
+      blk: 0,
+      to: 1,
+      pf: 2,
+    },
+    p2: {
+      playerId: 'p2',
+      pts: 24,
+      fgm: 10,
+      fga: 15,
+      tpm: 2,
+      tpa: 5,
+      ftm: 2,
+      fta: 3,
+      oreb: 2,
+      dreb: 3,
+      ast: 4,
+      stl: 1,
+      blk: 1,
+      to: 2,
+      pf: 1,
+    },
+  };
+  const existingEvents = [
+    {
+      id: 'ev_1',
+      videoClipId: 'clip_existing_1q',
+      quarter: '1Q',
+      timestampSec: 45,
+      team: 'home',
+      playerId: 'p1',
+      type: '2P_MADE',
+    },
+  ];
+  const prevGames = [
+    {
+      id: 'g_with_stats',
+      title: '【下級生】練習試合（11/23）',
+      date: '2026-11-23',
+      opponent: '正則学園',
+      category: '練習試合',
+      homeScore: 42,
+      awayScore: 35,
+      notes: '「【下級生】練習試合」より取り込み',
+      matches: [
+        {
+          id: 'match_stats_1',
+          label: '1試合目',
+          teamUnit: '',
+          opponent: '正則学園',
+          homeScore: 42,
+          awayScore: 35,
+          videos: [
+            {
+              id: 'clip_existing_1q',
+              label: '1Q',
+              youtubeTitle: '【練習試合】vs正則学園①20261123 1Q',
+              youtubeId: 'yt_old_1q',
+              youtubeUrl: 'https://www.youtube.com/watch?v=yt_old_1q',
+            },
+          ],
+          events: existingEvents,
+          manualBoxScore: existingBox,
+        },
+      ],
+      videos: [
+        {
+          id: 'clip_existing_1q',
+          label: '1Q',
+          youtubeTitle: '【練習試合】vs正則学園①20261123 1Q',
+          youtubeId: 'yt_old_1q',
+          youtubeUrl: 'https://www.youtube.com/watch?v=yt_old_1q',
+        },
+      ],
+      events: [],
+    },
+  ];
+
+  const grouped = groupPlaylistVideosByDate(
+    [
+      {
+        videoId: 'yt_old_1q',
+        title: '【練習試合】vs正則学園①20261123 1Q',
+        publishedAt: '2026-11-23T14:00:00Z',
+        position: 0,
+      },
+      {
+        videoId: 'yt_new_2q',
+        title: '【練習試合】vs正則学園①20261123 2Q',
+        publishedAt: '2026-11-23T15:00:00Z',
+        position: 1,
+      },
+      {
+        videoId: 'yt_new_b2',
+        title: '【練習試合】vs正則学園B②20261123',
+        publishedAt: '2026-11-23T16:00:00Z',
+        position: 2,
+      },
+      {
+        videoId: 'yt_day22_1',
+        title: '【練習試合】vs大宮北B20261122',
+        publishedAt: '2026-11-22T15:00:00Z',
+        position: 3,
+      },
+    ],
+    {
+      sinceDate: '2026-11-22',
+      registeredVideoIds: collectRegisteredGameVideoIds(prevGames),
+    }
+  );
+
+  // Simulate UI pre-filtering and AI call ONLY on 2026-11-23 (and AI failed on 2026-11-22)
+  const clipIdsByVideoId = {
+    yt_new_2q: 'clip_new_2q',
+    yt_new_b2: 'clip_new_b2',
+    yt_day22_1: 'clip_day22_1',
+  };
+
+  assert.equal(
+    findMatchingSummaryGameIndex(
+      prevGames,
+      '2026-11-23',
+      ['正則学園'],
+      '【下級生】練習試合',
+      getGameMatches
+    ),
+    0
+  );
+
+  const aiResultsByDate = {
+    '2026-11-23': {
+      matches: [
+        {
+          label: '1試合目',
+          teamUnit: '',
+          opponent: '正則学園',
+          clips: [
+            { id: 'clip_existing_1q', label: '1Q' },
+            { id: 'clip_new_2q', label: '2Q' },
+          ],
+        },
+        {
+          label: '2試合目',
+          teamUnit: 'B',
+          opponent: '正則学園',
+          clips: [{ id: 'clip_new_b2', label: '試合動画' }],
+        },
+      ],
+      fetchedTitles: {
+        yt_new_2q: '【練習試合】vs正則学園①20261123 2Q',
+        yt_new_b2: '【練習試合】vs正則学園B②20261123',
+      },
+    },
+    // 2026-11-22 intentionally omitted -> fallback rule-based grouping
+  };
+
+  let seq = 0;
+  const res = mergeSummaryDateGroupsIntoGames({
+    prevGames,
+    groups: grouped.groups,
+    playlistTitle: '【下級生】練習試合',
+    createId: (p) => `${p}_${++seq}`,
+    getMatchesFn: getGameMatches,
+    syncGameFn: (g, m) => syncGameFromMatches(g, m, computeMatchSummary),
+    clipIdsByVideoId,
+    aiResultsByDate,
+    applyAiMatchesFn: applyAiOrganizedMatches,
+  });
+
+  assert.equal(res.addedGames, 1);
+  assert.equal(res.updatedGames, 1);
+  assert.equal(res.addedVideos, 3);
+  assert.equal(res.nextGames.length, 2);
+
+  // Day 23 preserved stats on match 1 while placing 2Q into match 1 and B② into match 2
+  const day23 = res.nextGames.find((g) => g.date === '2026-11-23');
+  assert.ok(day23);
+  assert.equal(day23.matches.length, 2);
+  assert.equal(day23.matches[0].homeScore, 42);
+  assert.equal(day23.matches[0].awayScore, 35);
+  assert.equal(day23.matches[0].manualBoxScore?.p1.pts, 18);
+  assert.equal(day23.matches[0].manualBoxScore?.p2.pts, 24);
+  assert.equal(day23.matches[0].events.length, 1);
+  assert.deepEqual(
+    day23.matches[0].videos.map((v) => v.youtubeId),
+    ['yt_old_1q', 'yt_new_2q']
+  );
+  assert.equal(day23.matches[1].teamUnit, 'B');
+  assert.equal(day23.matches[1].opponent, '正則学園');
+  assert.equal(day23.matches[1].homeScore, 0);
+  assert.deepEqual(
+    day23.matches[1].videos.map((v) => v.youtubeId),
+    ['yt_new_b2']
+  );
+  assert.equal(day23.homeScore, 42);
+  assert.equal(day23.awayScore, 35);
+
+  // Day 22 (AI failed) was saved cleanly using rule-based fallback
+  const day22 = res.nextGames.find((g) => g.date === '2026-11-22');
+  assert.ok(day22);
+  assert.equal(day22.matches.length, 1);
+  assert.equal(day22.matches[0].teamUnit, 'B');
+  assert.equal(day22.matches[0].opponent, '大宮北');
+  assert.equal(day22.matches[0].videos[0].id, 'clip_day22_1');
+});
+
