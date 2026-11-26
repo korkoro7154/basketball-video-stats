@@ -52,7 +52,7 @@
 | `video-analyzer` | `src/App.tsx`, `src/App.css`, `src/components/**`, `src/utils/**` |
 | `api` | `api/**`, `src/portal/services/statsOcrApi.*`, `src/portal/services/matchOrganizeApi.*` |
 | `docs` | `*.md`（`GEMINI.md` と `PARALLEL_BOARD.md` は除く） |
-| `shared`（`--shared`） | `PortalApp.tsx`, `types.ts`, `portalStore.ts`, `firebase.ts`, `portal.css`, `index.css`, `main.tsx`, `package.json`, `vite.config.ts`, `tsconfig*.json`, `eslint.config.js`, `firestore.rules`, `vercel.json`, `render.yaml`, `index.html`, `GEMINI.md`, `scripts/parallel.mjs`, `.gitignore` |
+| `shared`（`--shared`） | `PortalApp.tsx`, `types.ts`, `portalStore.ts`, `firebase.ts`, `portal.css`, `index.css`, `main.tsx`, `package.json`, `vite.config.ts`, `tsconfig*.json`, `eslint.config.js`, `firestore.rules`, `vercel.json`, `render.yaml`, `index.html`, `GEMINI.md`, `scripts/parallel.mjs`, `scripts/portal-db.mjs`, `scripts/portal-db.test.mjs`, `.gitignore` |
 
 - **衝突時の行動**：他チャットが担当中のエリアや `shared` ロック中ファイルに触れる必要がある場合は、勝手に強行せず **ユーザーへ順番待ちまたは範囲調整を確認** してください。
 - **スタイル追加のコツ**：`src/portal/portal.css` は `shared`（同時1部屋のみ）です。画面専用の見た目を追加する場合は、可能な限り同じディレクトリに専用CSS（例：`GamesView.css`）を新規作成してコンポーネントから読み込んでください。
@@ -63,7 +63,7 @@
 
 - **本番公開しない**：`git push`（Vercel 本番反映）は、ユーザーが明示的に「本番に公開して」等と指示したときだけ実行する。
 - **本番データ保護**：Firebase 本番データや `firestore.rules` を指示なく変更しない。
-- **機密・個人情報保護**：`都立三原/`、`スクショ例/`、`.env`（`.env.*`）は絶対に `git add` / コミットしない。
+- **機密・個人情報保護**：`都立三原/`、`スクショ例/`、`.env`（`.env.*`）、`.secrets/`、`.portal-backups/`、`*firebase-adminsdk*.json`、`*service-account*.json` は `.gitignore` と `scripts/parallel.mjs` の二重ガードで保護されており、絶対に `git add` / コミットしない。
 - **削除禁止**：ユーザーの許可なくファイルや `.worktrees/` を削除しない（作業部屋は解放後も再利用する）。
 
 ---
