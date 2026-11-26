@@ -34,3 +34,9 @@ dist-ssr
 # Parallel multi-chat development (local only)
 .worktrees/
 PARALLEL_BOARD.md
+
+# Firebase Admin credentials & local Firestore backups (never commit)
+.secrets/
+.portal-backups/
+*firebase-adminsdk*.json
+*service-account*.json

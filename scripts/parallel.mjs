@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const ROOMS = {
   'room-a': { id: 'room-a', branch: 'work/room-a', relDir: '.worktrees/room-a', port: 5174 },
@@ -45,6 +46,8 @@ const SHARED_EXACT_FILES = new Set([
   'index.html',
   'GEMINI.md',
   'scripts/parallel.mjs',
+  'scripts/portal-db.mjs',
+  'scripts/portal-db.test.mjs',
   '.gitignore',
 ])
 
@@ -354,6 +357,7 @@ function withLock(paths, name, staleMs, fn) {
 function classifyFile(rawRelPath) {
   const p = rawRelPath.replaceAll('\\', '/').normalize('NFC')
   const base = path.posix.basename(p)
+  const segments = p.split('/').filter(Boolean)
 
   // 1. Forbidden files
   if (
@@ -364,10 +368,22 @@ function classifyFile(rawRelPath) {
     p === 'PARALLEL_BOARD.md' ||
     p === '.worktrees' ||
     p.startsWith('.worktrees/') ||
+    p === '.secrets' ||
+    p.startsWith('.secrets/') ||
+    segments.includes('.secrets') ||
+    p === '.portal-backups' ||
+    p.startsWith('.portal-backups/') ||
+    segments.includes('.portal-backups') ||
     base === '.env' ||
-    (base.startsWith('.env.') && base !== '.env.example')
+    (base.startsWith('.env.') && base !== '.env.example') ||
+    /firebase-adminsdk.*\.json$/i.test(base) ||
+    /service-account.*\.json$/i.test(base)
   ) {
-    return { kind: 'forbidden', area: null, reason: '個人情報や環境変数・管理用ローカルファイルはコミット禁止です' }
+    return {
+      kind: 'forbidden',
+      area: null,
+      reason: '個人情報や環境変数・秘密鍵・バックアップ・管理用ローカルファイルはコミット禁止です',
+    }
   }
 
   // 2. Shared files
@@ -1066,9 +1082,22 @@ function main() {
   }
 }
 
-try {
-  main()
-} catch (err) {
-  console.error(`エラー: ${err instanceof Error ? err.message : String(err)}`)
-  process.exit(1)
+export { classifyFile }
+
+const isDirectRun = (() => {
+  if (!process.argv[1]) return false
+  try {
+    return import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href
+  } catch {
+    return import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+  }
+})()
+
+if (isDirectRun) {
+  try {
+    main()
+  } catch (err) {
+    console.error(`エラー: ${err instanceof Error ? err.message : String(err)}`)
+    process.exit(1)
+  }
 }

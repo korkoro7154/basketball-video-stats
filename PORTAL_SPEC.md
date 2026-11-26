@@ -21,7 +21,7 @@
   - 現在のアプリ入口（`src/main.tsx`）はポータル画面（`PortalApp`）を描画する。
 - **改修前セーブポイント**：Gitタグ `savepoint-before-portal`（コミット `90650d6`）
 - **個人情報・機密保護**：
-  - `都立三原/`、`スクショ例/`、`.env`（`.env.*`）は `.gitignore` で除外し、絶対にコミット・公開しない。
+  - `都立三原/`、`スクショ例/`、`.env`（`.env.*`）、`.secrets/`、`.portal-backups/`、`*firebase-adminsdk*.json`、`*service-account*.json` は `.gitignore` と `scripts/parallel.mjs` の forbidden 判定で二重に除外し、絶対にコミット・公開しない。
 
 ---
 
@@ -118,6 +118,18 @@
   - 後方互換のため `syncGameFromMatches()` で親階層のスコア・動画・イベント等とも同期を保つ。
 - **`PracticeVideo`（練習動画）**：`id`, `title`, `date`, `youtubeId`, `youtubeUrl`, `youtubePlaylistId?`, `tags`, `memo?`, `moments` (`PracticeMoment[]`)
 
+### ローカル管理者用 Firestore 管理スクリプト（`scripts/portal-db.mjs`）
+- **目的**：管理者がローカルPCから Firestore の `portal/main` ドキュメントを安全に確認・バックアップ・更新・復元するための CLI ツール（`npm run portal:db -- <command>` でも実行可能）。
+- **秘密鍵とバンドル分離**：
+  - `firebase-admin` は `devDependencies` のみに配置し、Vite のフロントエンドビルド（`dist/`）には一切含めない。
+  - サービスアカウント鍵は環境変数 `FIREBASE_SERVICE_ACCOUNT_PATH` または既定パス `.secrets/firebase-admin-key.json` から読み込む（未配置時は設定手順を日本語で案内して安全終了）。
+- **サブコマンド**：
+  - `check`：接続確認し、チーム名・選手数・試合日数（総試合数・動画数）・練習動画数を表示。
+  - `backup`：現在の `portal/main` を `.portal-backups/portal-YYYYMMDD-HHMMSS.json` に保存（同一秒衝突時は連番サフィックス付き）。
+  - `summary`：登録済みの試合日（日付・タイトル・各試合の対戦相手／スコア有無／動画数）と選手名簿（背番号・氏名）を一覧出力。
+  - `apply <jsonFile> [--dry-run] [--force]`：`PortalData` の必須 8 フィールド型検証・重複 ID／不正値検証・`undefined` 除去および既存データ比での安全チェック（試合数・マッチ数・記録済みスタッツ・動画数・選手数・練習動画数の大幅減少や全オーナー削除のブロック）を実施。`--dry-run` 時は変更サマリーのみ表示して書き込まず、本番反映時は**必ず先に自動 `backup` を `.portal-backups/` に保存してから**書き込む。
+  - `restore <backupJsonFile>`：入力バックアップの検証後、**復元前に現在状態のバックアップを 1 枚 `.portal-backups/` に保存してから**指定バックアップで `portal/main` を復元。
+
 ---
 
 ## 6. 実装状況と残りの運用タスク
@@ -134,6 +146,7 @@
 - [x] ローカル環境限定の切り替え式テストモード（本番データをコピーした仮データで安全に検証・リセット可能）
 - [x] チームロゴによる PWA アプリアイコン・ヘッダー/ログインロゴ設定＆スマホ「ホーム画面に追加」ガイド
 - [x] 本番サイトの「管理・設定 → 選手名簿」へのチーム選手名簿登録
+- [x] ローカル管理者用 Firestore 管理スクリプト（`scripts/portal-db.mjs`）と秘密鍵・バックアップの二重公開防止ガード（`.gitignore`・`scripts/parallel.mjs`）
 
 ### 残りの運用タスク（本番サイトでの操作）
 - [ ] スマホや iPad から本番サイトを開き、未登録の試合日（電機大高校・9/23 美原・国分寺など）で写真取り込み・AI自動整理・表示確認・過去データの整理を行う
