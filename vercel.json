@@ -4,5 +4,15 @@
     "api/*.ts": {
       "maxDuration": 45
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/__/auth/(.*)",
+      "destination": "https://basketball-portal-11649.firebaseapp.com/__/auth/$1"
+    },
+    {
+      "source": "/__/firebase/(.*)",
+      "destination": "https://basketball-portal-11649.firebaseapp.com/__/firebase/$1"
+    }
+  ]
 }
