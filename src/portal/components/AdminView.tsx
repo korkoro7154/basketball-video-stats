@@ -27,7 +27,6 @@ import type {
   Player,
   PlayerBoxScoreEntry,
   PortalData,
-  PracticeVideo,
   QuarterLabel,
   StatActionType,
 } from '../types';
@@ -164,7 +163,6 @@ export function AdminView({
 
   // 設定用ステート
   const [teamNameInput, setTeamNameInput] = useState(data.teamName);
-  const [newTagInput, setNewTagInput] = useState('');
   const [newPinInput, setNewPinInput] = useState('');
 
   useEffect(() => {
@@ -799,23 +797,6 @@ export function AdminView({
     onNotify('チーム名を更新しました', 'success');
   };
 
-  const handleAddTag = (e: React.FormEvent) => {
-    e.preventDefault();
-    const raw = newTagInput.trim();
-    if (!raw) return;
-    const tag = raw.startsWith('#') ? raw : `#${raw}`;
-    if (data.practiceTags.includes(tag)) {
-      onNotify('同じタグがすでにあります', 'info');
-      return;
-    }
-    onUpdateData((prev) => ({
-      ...prev,
-      practiceTags: [...prev.practiceTags, tag],
-    }));
-    setNewTagInput('');
-    onNotify(`タグ「${tag}」を追加しました`, 'success');
-  };
-
   const handleChangePin = (e: React.FormEvent) => {
     e.preventDefault();
     if (!/^\d{4}$/.test(newPinInput.trim())) {
@@ -843,21 +824,6 @@ export function AdminView({
       setSelectedGameId('');
     }
     onNotify('試合を削除しました', 'info');
-  };
-
-  const handleRemovePractice = (practice: PracticeVideo) => {
-    if (
-      !window.confirm(
-        `練習動画「${practice.date} ${practice.title}」を削除しますか？`
-      )
-    ) {
-      return;
-    }
-    onUpdateData((prev) => ({
-      ...prev,
-      practices: prev.practices.filter((p) => p.id !== practice.id),
-    }));
-    onNotify('練習動画を削除しました', 'info');
   };
 
   const activeScores =
@@ -1792,7 +1758,7 @@ export function AdminView({
             )}
           </section>
 
-          {/* Card 3: 登録済み 試合・練習の削除（折りたたみ） */}
+          {/* Card 3: 登録済み 試合の削除（折りたたみ） */}
           <section className="portal-card">
             <button
               type="button"
@@ -1801,10 +1767,7 @@ export function AdminView({
             >
               <span className="match-org-toggle-left">
                 <Trash2 size={15} className="accent-icon" />
-                <span>
-                  登録済み 試合・練習の削除（試合{data.games.length}件・練習
-                  {data.practices.length}件）
-                </span>
+                <span>登録済み 試合の削除（試合{data.games.length}件）</span>
               </span>
               {showManageDataSection ? (
                 <ChevronUp size={16} />
@@ -1816,61 +1779,34 @@ export function AdminView({
             {showManageDataSection && (
               <div className="match-org-body">
                 <p className="table-helper-text">
-                  不要になった試合や練習動画を1件ずつ削除できます。
+                  不要になった試合を1件ずつ削除できます。
                 </p>
 
-                {data.games.length === 0 && data.practices.length === 0 ? (
-                  <div className="empty-box">登録済みの試合・練習はまだありません</div>
+                {data.games.length === 0 ? (
+                  <div className="empty-box">登録済みの試合はまだありません</div>
                 ) : (
-                  <div className="portal-section-stack">
-                    {[
-                      {
-                        key: 'games',
-                        caption: `試合（${data.games.length}件）`,
-                        rows: [...data.games]
-                          .sort((a, b) => b.date.localeCompare(a.date))
-                          .map((game) => ({
-                            id: game.id,
-                            primary: `${game.date} vs ${game.opponent}`,
-                            secondary: game.title,
-                            ariaLabel: `${game.title}を削除`,
-                            onRemove: () => handleRemoveGame(game),
-                          })),
-                      },
-                      {
-                        key: 'practices',
-                        caption: `練習動画（${data.practices.length}件）`,
-                        rows: [...data.practices]
-                          .sort((a, b) => b.date.localeCompare(a.date))
-                          .map((practice) => ({
-                            id: practice.id,
-                            primary: practice.title,
-                            secondary: practice.date,
-                            ariaLabel: `${practice.title}を削除`,
-                            onRemove: () => handleRemovePractice(practice),
-                          })),
-                      },
-                    ]
-                      .filter((section) => section.rows.length > 0)
-                      .map((section) => (
-                        <div key={section.key} className="roster-list">
-                          <div className="field-caption">{section.caption}</div>
-                          {section.rows.map((row) => (
-                            <div key={row.id} className="roster-row">
-                              <div className="allowed-email-info">
-                                <span className="roster-name">{row.primary}</span>
-                                <span className="roster-meta">{row.secondary}</span>
-                              </div>
-                              <button
-                                type="button"
-                                className="btn-icon-danger"
-                                onClick={row.onRemove}
-                                aria-label={row.ariaLabel}
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          ))}
+                  <div className="roster-list">
+                    <div className="field-caption">
+                      試合（{data.games.length}件）
+                    </div>
+                    {[...data.games]
+                      .sort((a, b) => b.date.localeCompare(a.date))
+                      .map((game) => (
+                        <div key={game.id} className="roster-row">
+                          <div className="allowed-email-info">
+                            <span className="roster-name">
+                              {game.date} vs {game.opponent}
+                            </span>
+                            <span className="roster-meta">{game.title}</span>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn-icon-danger"
+                            onClick={() => handleRemoveGame(game)}
+                            aria-label={`${game.title}を削除`}
+                          >
+                            <Trash2 size={16} />
+                          </button>
                         </div>
                       ))}
                   </div>
@@ -1879,7 +1815,7 @@ export function AdminView({
             )}
           </section>
 
-          {/* Card 4: その他設定（チーム名・管理者PIN・練習タグ・折りたたみ） */}
+          {/* Card 4: その他設定（チーム名・管理者PIN・折りたたみ） */}
           <section className="portal-card">
             <button
               type="button"
@@ -1887,7 +1823,7 @@ export function AdminView({
               onClick={() => setShowOtherSettingsSection((v) => !v)}
             >
               <span className="match-org-toggle-left">
-                <span>⚙️ その他設定（チーム名・管理者PIN・練習タグ）</span>
+                <span>⚙️ その他設定（チーム名・管理者PIN）</span>
               </span>
               {showOtherSettingsSection ? (
                 <ChevronUp size={16} />
@@ -1911,29 +1847,6 @@ export function AdminView({
                       <Save size={15} /> 保存
                     </button>
                   </form>
-                </div>
-
-                <div>
-                  <h3 className="block-subtitle">練習タグの追加</h3>
-                  <form onSubmit={handleAddTag} className="inline-input-btn">
-                    <input
-                      type="text"
-                      className="portal-input flex-1"
-                      value={newTagInput}
-                      onChange={(e) => setNewTagInput(e.target.value)}
-                      placeholder="例：#ゾーンプレス"
-                    />
-                    <button type="submit" className="btn-accent btn-sm">
-                      <Plus size={15} /> 追加
-                    </button>
-                  </form>
-                  <div className="chip-wrap top-gap">
-                    {data.practiceTags.map((t) => (
-                      <span key={t} className="tag-pill">
-                        {t}
-                      </span>
-                    ))}
-                  </div>
                 </div>
 
                 <div>
