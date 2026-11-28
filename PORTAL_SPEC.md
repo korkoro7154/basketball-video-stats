@@ -9,9 +9,11 @@
 - **目的**：高校バスケ部の部員全員がスマホのブラウザから「試合動画」「練習動画」「スタッツ」をいつでも見返せる共有ポータルを提供する。
 - **本番公開URL**：Vercel（`https://basketball-video-stats.vercel.app`）
   - 東京リージョン（`hnd1`）構成、Serverless Functions（`api/*.ts`）の最大実行時間は `45` 秒（`vercel.json`）。
+  - 学校Wi-Fi での `*.firebaseapp.com` フィルタリングおよび Safari のクロスドメイン制限（ITP）対策として、`vercel.json` の `rewrites` で `/__/auth/*` と `/__/firebase/*` を `https://basketball-portal-11649.firebaseapp.com` へ中継する。
 - **クラウドDB・認証**：Firebase プロジェクト `basketball-portal-11649`
   - Firestore の単一ドキュメント（`portal/main`）をリアルタイム購読・保存し、部員全員のスマホへ即時共有する（`src/portal/services/portalStore.ts`）。
   - Firebase 未設定の試作環境のみ、ブラウザの `localStorage` にフォールバックする。
+  - `authDomain` は `src/portal/utils/authDomain.ts`（`resolveFirebaseAuthDomain()`）で判定し、本番ドメイン（`basketball-video-stats.vercel.app`）アクセス時のみ本番ドメイン自体を `authDomain` として認証を中継し、`localhost` やプレビュー環境等では従来どおり `VITE_FIREBASE_AUTH_DOMAIN` を使用する（`src/portal/firebase.ts`）。
 - **ローカル限定テストモード（サンドボックス）**：
   - ローカル開発環境（`localhost` / `127.0.0.1` / LAN 開発サーバー等）のみで表示・有効化でき、Vercel 本番URLでは一切表示されない（`src/portal/utils/sandbox.ts`）。
   - 「テストモードに切替」を押すと、その時点の本番データ（`cloudData`）をディープコピーしてブラウザ内（`localStorage`）のみで保持し、ON 中は Firestore への書き込みを完全に遮断する（Google 認証は維持されるため AI 処理や YouTube 取込もテスト可能）。
@@ -31,6 +33,8 @@
 | :--- | :--- | :--- |
 | **第1ロック**<br>（全員ログイン必須） | 部員・マネージャー・顧問全員 | Firebase Authentication の Google ログイン必須。`ownerEmails` または `allowedEmails` に登録されたメールアドレスのみデータ閲覧が可能。未許可アカウントには `AccessDeniedScreen` を表示する。 |
 | **第2ロック**<br>（管理者・記録者PIN） | マネージャー・顧問 | 「記録・管理」タブの操作時に `adminPin`（`PinGate`）の入力を必要とし、部員による誤編集・削除を防ぐ。 |
+
+- **本番ドメイン経由の認証中継（学校Wi-Fi・Safari 対策）**：本番URL（`basketball-video-stats.vercel.app`）からの Google ログイン時は同ドメイン上の `/__/auth/*`・`/__/firebase/*` を経由して認証処理を行うため、学校Wi-Fi で `firebaseapp.com` がブロックされる環境や Safari でもログインが可能（Google Cloud Console の承認済みリダイレクト URI `https://basketball-video-stats.vercel.app/__/auth/handler` および Firebase Console の承認済みドメイン `basketball-video-stats.vercel.app` 登録を前提とする）。
 
 ---
 
@@ -147,6 +151,7 @@
 - [x] チームロゴによる PWA アプリアイコン・ヘッダー/ログインロゴ設定＆スマホ「ホーム画面に追加」ガイド
 - [x] 本番サイトの「管理・設定 → 選手名簿」へのチーム選手名簿登録
 - [x] ローカル管理者用 Firestore 管理スクリプト（`scripts/portal-db.mjs`）と秘密鍵・バックアップの二重公開防止ガード（`.gitignore`・`scripts/parallel.mjs`）
+- [x] 本番ドメイン経由の Firebase Auth 認証中継（`vercel.json` の `/__/auth/*`・`/__/firebase/*` プロキシと `authDomain` 自動切替による学校Wi-Fi・Safari 対策）
 
 ### 残りの運用タスク（本番サイトでの操作）
 - [ ] スマホや iPad から本番サイトを開き、未登録の試合日（電機大高校・9/23 美原・国分寺など）で写真取り込み・AI自動整理・表示確認・過去データの整理を行う
