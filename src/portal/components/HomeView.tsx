@@ -1,18 +1,16 @@
 import { useState } from 'react';
 import {
   Trophy,
-  Video,
   Search,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   Calendar,
   Smartphone,
-  Tag,
   PlayCircle,
   ClipboardEdit,
 } from 'lucide-react';
-import type { GameRecord, PracticeVideo } from '../types';
+import type { GameRecord } from '../types';
 import { computeGameScores, getGameResult } from '../utils/stats';
 
 function isRunningStandalone(): boolean {
@@ -28,21 +26,15 @@ function isRunningStandalone(): boolean {
 
 interface HomeViewProps {
   games: GameRecord[];
-  practices: PracticeVideo[];
   onOpenGame: (gameId: string) => void;
-  onOpenPractice: (practiceId: string) => void;
   onSearchGames: (query: string) => void;
-  onSearchPractices: (query: string) => void;
   onGoToAdmin: () => void;
 }
 
 export function HomeView({
   games,
-  practices,
   onOpenGame,
-  onOpenPractice,
   onSearchGames,
-  onSearchPractices,
   onGoToAdmin,
 }: HomeViewProps) {
   const [quickQuery, setQuickQuery] = useState('');
@@ -50,10 +42,16 @@ export function HomeView({
   const [installGuideOpen, setInstallGuideOpen] = useState(false);
 
   const sortedGames = [...games].sort((a, b) => b.date.localeCompare(a.date));
-  const sortedPractices = [...practices].sort((a, b) => b.date.localeCompare(a.date));
 
   const latestGame = sortedGames[0] ?? null;
-  const recentPractices = sortedPractices.slice(0, 3);
+  const totalGameVideos = games.reduce(
+    (sum, g) =>
+      sum +
+      (Array.isArray(g.matches) && g.matches.length > 0
+        ? g.matches.reduce((mSum, m) => mSum + m.videos.length, 0)
+        : g.videos.length),
+    0
+  );
 
   const summary = sortedGames.reduce(
     (acc, g) => {
@@ -66,10 +64,8 @@ export function HomeView({
     { wins: 0, losses: 0, draws: 0 }
   );
 
-  const handleQuickSearch = (target: 'games' | 'practices') => {
-    const q = quickQuery.trim();
-    if (target === 'games') onSearchGames(q);
-    else onSearchPractices(q);
+  const handleQuickSearch = () => {
+    onSearchGames(quickQuery.trim());
   };
 
   return (
@@ -102,8 +98,8 @@ export function HomeView({
             <strong className="kpi-value">{games.length}試合</strong>
           </div>
           <div className="kpi-box">
-            <span className="kpi-label">練習動画</span>
-            <strong className="kpi-value">{practices.length}本</strong>
+            <span className="kpi-label">試合動画</span>
+            <strong className="kpi-value">{totalGameVideos}本</strong>
           </div>
         </div>
       </section>
@@ -119,28 +115,19 @@ export function HomeView({
               value={quickQuery}
               onChange={(e) => setQuickQuery(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') handleQuickSearch('games');
+                if (e.key === 'Enter') handleQuickSearch();
               }}
-              placeholder="対戦相手やタグ（#速攻など）で検索..."
+              placeholder="対戦相手・大会名・日付で検索..."
             />
           </div>
         </div>
-        <div className="quick-search-actions">
-          <button
-            type="button"
-            className="btn-soft-sm"
-            onClick={() => handleQuickSearch('games')}
-          >
-            <Trophy size={14} /> 試合から探す
-          </button>
-          <button
-            type="button"
-            className="btn-soft-sm"
-            onClick={() => handleQuickSearch('practices')}
-          >
-            <Video size={14} /> 練習動画から探す
-          </button>
-        </div>
+        <button
+          type="button"
+          className="btn-soft-sm btn-block"
+          onClick={handleQuickSearch}
+        >
+          <Trophy size={14} /> 試合から探す
+        </button>
       </section>
 
       {/* 最新の試合 */}
@@ -233,58 +220,6 @@ export function HomeView({
           })()
         ) : (
           <div className="empty-box">まだ試合が登録されていません</div>
-        )}
-      </section>
-
-      {/* 新着の練習動画 */}
-      <section className="portal-block">
-        <div className="block-header">
-          <h3 className="block-title">
-            <Video size={17} className="accent-icon" />
-            新着の練習動画
-          </h3>
-          <button
-            type="button"
-            className="link-more"
-            onClick={() => onSearchPractices('')}
-          >
-            すべて見る <ChevronRight size={15} />
-          </button>
-        </div>
-
-        {recentPractices.length === 0 ? (
-          <div className="empty-box">まだ練習動画が登録されていません</div>
-        ) : (
-          <div className="practice-compact-list">
-            {recentPractices.map((prac) => (
-              <button
-                key={prac.id}
-                type="button"
-                className="practice-compact-item"
-                onClick={() => onOpenPractice(prac.id)}
-              >
-                <div className="practice-compact-main">
-                  <div className="practice-compact-meta">
-                    <span className="card-date">
-                      <Calendar size={12} /> {prac.date}
-                    </span>
-                    <span className="moment-count">
-                      見どころ {prac.moments.length}件
-                    </span>
-                  </div>
-                  <div className="practice-compact-title">{prac.title}</div>
-                  <div className="tag-row">
-                    {prac.tags.map((tag) => (
-                      <span key={tag} className="tag-pill">
-                        <Tag size={10} /> {tag.replace(/^#/, '')}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <ChevronRight size={18} className="chevron-muted" />
-              </button>
-            ))}
-          </div>
         )}
       </section>
 

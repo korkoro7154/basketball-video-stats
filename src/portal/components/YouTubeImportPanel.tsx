@@ -16,7 +16,6 @@ import type {
   GameRecord,
   GameVideoClip,
   PortalData,
-  PracticeVideo,
 } from '../types';
 import { requestYouTubeAccessToken } from '../firebase';
 import {
@@ -37,9 +36,7 @@ import {
   buildMatchesFromParsedEntries,
   collectAllRegisteredVideoIds,
   collectRegisteredGameVideoIds,
-  collectRegisteredPracticeVideoIds,
   extractAllYouTubePlaylistIds,
-  extractHashtagsFromText,
   extractYouTubePlaylistId,
   extractYouTubePlaylistIdsFromHtml,
   extractYouTubeVideoId,
@@ -48,10 +45,8 @@ import {
   inferClipLabelFromTitle,
   inferDateFromText,
   inferOpponentFromTitle,
-  inferPlaylistKind,
   mergeSummaryDateGroupsIntoGames,
   parseGameVideoTitle,
-  parseTimeString,
   shouldStopFetchingOlderPages,
 } from '../utils/youtube';
 import type { SummaryAiOrganizedMatch } from '../utils/youtube';
@@ -190,7 +185,6 @@ function getPrivacyLabel(status: string): string {
 interface PlaylistChecklistBoxProps {
   items: YouTubePlaylistSummary[];
   selectedIds: string[];
-  kindOverrides: Record<string, 'game' | 'practice'>;
   data: PortalData;
   importing: boolean;
   progressText: string;
@@ -199,16 +193,13 @@ interface PlaylistChecklistBoxProps {
   onSelectAll: () => void;
   onClearSelection: () => void;
   onToggleId: (id: string) => void;
-  onChangeKind: (id: string, kind: 'game' | 'practice') => void;
   onOpenAsSummary?: (playlist: YouTubePlaylistSummary) => void;
   onImport: () => void;
-  children?: React.ReactNode;
 }
 
 function PlaylistChecklistBox({
   items,
   selectedIds,
-  kindOverrides,
   data,
   importing,
   progressText,
@@ -217,15 +208,9 @@ function PlaylistChecklistBox({
   onSelectAll,
   onClearSelection,
   onToggleId,
-  onChangeKind,
   onOpenAsSummary,
   onImport,
-  children,
 }: PlaylistChecklistBoxProps) {
-  const hasGameItem = items.some(
-    (pl) => (kindOverrides[pl.id] ?? inferPlaylistKind(pl.title)) === 'game'
-  );
-
   return (
     <div className="demo-playlist-box">
       <div className="row-between">
@@ -244,10 +229,7 @@ function PlaylistChecklistBox({
 
       {items.map((pl) => {
         const checked = selectedIds.includes(pl.id);
-        const kind = kindOverrides[pl.id] ?? inferPlaylistKind(pl.title);
-        const isSynced =
-          data.games.some((g) => g.youtubePlaylistId === pl.id) ||
-          data.practices.some((p) => p.youtubePlaylistId === pl.id);
+        const isSynced = data.games.some((g) => g.youtubePlaylistId === pl.id);
 
         return (
           <div key={pl.id} className="demo-playlist-item">
@@ -266,22 +248,8 @@ function PlaylistChecklistBox({
                 <span className="card-date">{pl.itemCount}本</span>
               </div>
               <strong>{pl.title}</strong>
-              <div className="yt-kind-switch">
-                <button
-                  type="button"
-                  className={`yt-kind-pill ${kind === 'game' ? 'is-active' : ''}`}
-                  onClick={() => onChangeKind(pl.id, 'game')}
-                >
-                  試合として取込
-                </button>
-                <button
-                  type="button"
-                  className={`yt-kind-pill ${kind === 'practice' ? 'is-active' : ''}`}
-                  onClick={() => onChangeKind(pl.id, 'practice')}
-                >
-                  練習として取込
-                </button>
-                {onOpenAsSummary && kind === 'game' && (
+              {onOpenAsSummary && (
+                <div className="yt-kind-switch">
                   <button
                     type="button"
                     className="yt-split-action-btn"
@@ -289,25 +257,21 @@ function PlaylistChecklistBox({
                   >
                     <Calendar size={12} /> 日付ごとに取込
                   </button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
         );
       })}
 
-      {children}
-
-      {hasGameItem && (
-        <label className="ocr-checkbox-row">
-          <input
-            type="checkbox"
-            checked={autoOrganizeWithAi}
-            onChange={(e) => onToggleAutoOrganize(e.target.checked)}
-          />
-          <span>取り込み時にAIで試合・何Q・A/Bを自動整理する</span>
-        </label>
-      )}
+      <label className="ocr-checkbox-row">
+        <input
+          type="checkbox"
+          checked={autoOrganizeWithAi}
+          onChange={(e) => onToggleAutoOrganize(e.target.checked)}
+        />
+        <span>取り込み時にAIで試合・何Q・A/Bを自動整理する</span>
+      </label>
 
       <button
         type="button"
@@ -367,10 +331,6 @@ export function YouTubeImportPanel({
   const [bulkText, setBulkText] = useState('');
   const [bulkPlaylists, setBulkPlaylists] = useState<YouTubePlaylistSummary[]>([]);
   const [bulkSelectedIds, setBulkSelectedIds] = useState<string[]>([]);
-  const [bulkKindOverrides, setBulkKindOverrides] = useState<
-    Record<string, 'game' | 'practice'>
-  >({});
-  const [bulkPracticeTags, setBulkPracticeTags] = useState<string[]>([]);
   const [loadingBulkFetch, setLoadingBulkFetch] = useState(false);
   const [importingBulk, setImportingBulk] = useState(false);
   const [bulkProgress, setBulkProgress] = useState('');
@@ -416,7 +376,6 @@ export function YouTubeImportPanel({
   );
 
   // 3. 1本ずつURL登録
-  const [singleKind, setSingleKind] = useState<'game' | 'practice'>('practice');
   const [singleTargetGameId, setSingleTargetGameId] = useState('__new__');
   const [singleClipLabel, setSingleClipLabel] = useState('');
   const [singleUrlInput, setSingleUrlInput] = useState('');
@@ -426,29 +385,20 @@ export function YouTubeImportPanel({
   );
   const [singleDateTouched, setSingleDateTouched] = useState(false);
   const [singleOpponent, setSingleOpponent] = useState('');
-  const [singleSelectedTags, setSingleSelectedTags] = useState<string[]>(['#速攻']);
-  const [singleMemo, setSingleMemo] = useState('');
-  const [singleMomentTime, setSingleMomentTime] = useState('');
-  const [singleMomentLabel, setSingleMomentLabel] = useState('');
   const [submittingSingle, setSubmittingSingle] = useState(false);
   const [singleProgress, setSingleProgress] = useState('');
 
   const buildSelectionDefaults = (items: YouTubePlaylistSummary[]) => {
-    const nextKinds: Record<string, 'game' | 'practice'> = {};
     const unregisteredIds: string[] = [];
 
     items.forEach((pl) => {
-      nextKinds[pl.id] = inferPlaylistKind(pl.title);
-      const alreadyExists =
-        data.games.some((g) => g.youtubePlaylistId === pl.id) ||
-        data.practices.some((p) => p.youtubePlaylistId === pl.id);
+      const alreadyExists = data.games.some((g) => g.youtubePlaylistId === pl.id);
       if (!alreadyExists) {
         unregisteredIds.push(pl.id);
       }
     });
 
     return {
-      nextKinds,
       initialSelected:
         unregisteredIds.length > 0 ? unregisteredIds : items.map((i) => i.id),
     };
@@ -502,10 +452,8 @@ export function YouTubeImportPanel({
   const mergeFetchedPlaylistsIntoPortal = (
     bundles: Array<{
       playlist: YouTubePlaylistSummary;
-      kind: 'game' | 'practice';
       videos: YouTubePlaylistVideoItem[];
       opponentOverride?: string;
-      tagsOverride?: string[];
       prebuiltClips?: GameVideoClip[];
       aiOrganizedMatches?: AiOrganizedMatchInput[];
       aiFetchedTitles?: Record<string, string>;
@@ -514,25 +462,19 @@ export function YouTubeImportPanel({
   ) => {
     let addedGames = 0;
     let updatedGames = 0;
-    let addedPractices = 0;
     let latestGameId = '';
     let aiSucceeded = 0;
     let aiFailed = 0;
 
     onUpdateData((prev) => {
       const nextGames = [...prev.games];
-      const nextPractices = [...prev.practices];
       const globalGameVideoIds = collectRegisteredGameVideoIds(nextGames);
-      const globalPracticeVideoIds =
-        collectRegisteredPracticeVideoIds(nextPractices);
 
       bundles.forEach(
         ({
           playlist,
-          kind,
           videos,
           opponentOverride,
-          tagsOverride,
           prebuiltClips,
           aiOrganizedMatches,
           aiFetchedTitles,
@@ -540,186 +482,147 @@ export function YouTubeImportPanel({
         }) => {
           if (videos.length === 0) return;
 
-          if (kind === 'game') {
-            const existingIdx = nextGames.findIndex(
-              (g) => g.youtubePlaylistId === playlist.id
-            );
+          const existingIdx = nextGames.findIndex(
+            (g) => g.youtubePlaylistId === playlist.id
+          );
 
-            if (existingIdx !== -1) {
-              const existing = nextGames[existingIdx];
-              const rawClips: GameVideoClip[] = prebuiltClips
-                ? prebuiltClips
-                : videos.map((v, idx) => ({
-                    id: createYtClientId('clip'),
-                    label: inferClipLabelFromTitle(
-                      v.title,
-                      existing.videos.length + idx,
-                      existing.videos.length + videos.length
-                    ),
-                    youtubeTitle: v.title,
-                    youtubeId: v.videoId,
-                    youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
-                  }));
-              const newClips = rawClips.filter((c) => {
-                if (!c.youtubeId || globalGameVideoIds.has(c.youtubeId)) {
-                  return false;
-                }
-                globalGameVideoIds.add(c.youtubeId);
-                return true;
-              });
+          if (existingIdx !== -1) {
+            const existing = nextGames[existingIdx];
+            const rawClips: GameVideoClip[] = prebuiltClips
+              ? prebuiltClips
+              : videos.map((v, idx) => ({
+                  id: createYtClientId('clip'),
+                  label: inferClipLabelFromTitle(
+                    v.title,
+                    existing.videos.length + idx,
+                    existing.videos.length + videos.length
+                  ),
+                  youtubeTitle: v.title,
+                  youtubeId: v.videoId,
+                  youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+                }));
+            const newClips = rawClips.filter((c) => {
+              if (!c.youtubeId || globalGameVideoIds.has(c.youtubeId)) {
+                return false;
+              }
+              globalGameVideoIds.add(c.youtubeId);
+              return true;
+            });
 
-              if (newClips.length > 0) {
-                const baseMatches = getGameMatches(existing);
-                const hasAi =
-                  Boolean(aiOrganizedMatches && aiOrganizedMatches.length > 0);
-                let mergedMatches: GameMatch[];
-                if (hasAi && aiOrganizedMatches) {
-                  const stagedNewMatch: GameMatch = {
-                    id: createYtClientId('tmp_match'),
-                    label: '新規追加',
-                    teamUnit: '',
-                    opponent: existing.opponent,
-                    homeScore: 0,
-                    awayScore: 0,
-                    videos: newClips,
-                    events: [],
-                  };
-                  mergedMatches = applyAiOrganizedMatches(
-                    [...baseMatches, stagedNewMatch],
-                    aiOrganizedMatches,
-                    existing.opponent,
-                    aiFetchedTitles
-                  );
-                } else {
-                  const appendedMatches = autoGroupClipsIntoMatches(
-                    newClips,
-                    existing.opponent
-                  );
-                  mergedMatches = [...baseMatches, ...appendedMatches];
-                }
-                nextGames[existingIdx] = syncGameFromMatches(
-                  existing,
-                  mergedMatches,
-                  computeMatchSummary
+            if (newClips.length > 0) {
+              const baseMatches = getGameMatches(existing);
+              const hasAi =
+                Boolean(aiOrganizedMatches && aiOrganizedMatches.length > 0);
+              let mergedMatches: GameMatch[];
+              if (hasAi && aiOrganizedMatches) {
+                const stagedNewMatch: GameMatch = {
+                  id: createYtClientId('tmp_match'),
+                  label: '新規追加',
+                  teamUnit: '',
+                  opponent: existing.opponent,
+                  homeScore: 0,
+                  awayScore: 0,
+                  videos: newClips,
+                  events: [],
+                };
+                mergedMatches = applyAiOrganizedMatches(
+                  [...baseMatches, stagedNewMatch],
+                  aiOrganizedMatches,
+                  existing.opponent,
+                  aiFetchedTitles
                 );
-                updatedGames += 1;
-                if (aiStatus === 'success') aiSucceeded += 1;
-                else if (aiStatus === 'failed') aiFailed += 1;
+              } else {
+                const appendedMatches = autoGroupClipsIntoMatches(
+                  newClips,
+                  existing.opponent
+                );
+                mergedMatches = [...baseMatches, ...appendedMatches];
               }
-              latestGameId = existing.id;
-            } else {
-              const rawClips: GameVideoClip[] = prebuiltClips
-                ? prebuiltClips
-                : videos.map((v, idx) => ({
-                    id: createYtClientId('clip'),
-                    label: inferClipLabelFromTitle(v.title, idx, videos.length),
-                    youtubeTitle: v.title,
-                    youtubeId: v.videoId,
-                    youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
-                  }));
-              const clips = rawClips.filter((c) => {
-                if (!c.youtubeId || globalGameVideoIds.has(c.youtubeId)) {
-                  return false;
-                }
-                globalGameVideoIds.add(c.youtubeId);
-                return true;
-              });
-
-              if (clips.length === 0) {
-                return;
-              }
-
-              const gameId = createYtClientId('game');
-              const opp =
-                opponentOverride?.trim() || inferOpponentFromTitle(playlist.title);
-              const matches =
-                aiOrganizedMatches && aiOrganizedMatches.length > 0
-                  ? applyAiOrganizedMatches(
-                      [
-                        {
-                          id: 'import_tmp',
-                          label: '1試合目',
-                          teamUnit: '',
-                          opponent: opp,
-                          homeScore: 0,
-                          awayScore: 0,
-                          videos: clips,
-                          events: [],
-                        },
-                      ],
-                      aiOrganizedMatches,
-                      opp,
-                      aiFetchedTitles
-                    )
-                  : autoGroupClipsIntoMatches(clips, opp);
-              const distinctOpponents = Array.from(
-                new Set(matches.map((m) => m.opponent).filter(Boolean))
+              nextGames[existingIdx] = syncGameFromMatches(
+                existing,
+                mergedMatches,
+                computeMatchSummary
               );
-              const resolvedOpp =
-                (opp === '対戦相手' || opp === '練習試合') &&
-                distinctOpponents.length > 0
-                  ? distinctOpponents.join('・')
-                  : opp;
-              const newGame: GameRecord = {
-                id: gameId,
-                title: playlist.title,
-                date: inferDateFromText(
-                  `${playlist.title} ${playlist.description}`,
-                  playlist.publishedAt
-                ),
-                opponent: resolvedOpp,
-                category: '練習試合',
-                homeScore: 0,
-                awayScore: 0,
-                youtubePlaylistId: playlist.id,
-                notes: playlist.description ? playlist.description.slice(0, 180) : undefined,
-                matches,
-                videos: matches.flatMap((m) => m.videos),
-                events: [],
-              };
-              nextGames.unshift(newGame);
-              addedGames += 1;
-              latestGameId = gameId;
+              updatedGames += 1;
               if (aiStatus === 'success') aiSucceeded += 1;
               else if (aiStatus === 'failed') aiFailed += 1;
             }
+            latestGameId = existing.id;
           } else {
-            const fallbackTag = prev.practiceTags[0] || '#速攻';
-
-            videos.forEach((v) => {
-              if (!v.videoId || globalPracticeVideoIds.has(v.videoId)) return;
-              globalPracticeVideoIds.add(v.videoId);
-
-              const autoTags = extractHashtagsFromText(
-                `${playlist.title} ${v.title} ${v.description}`,
-                prev.practiceTags
-              );
-              const finalTags =
-                tagsOverride && tagsOverride.length > 0
-                  ? Array.from(new Set([...tagsOverride, ...autoTags]))
-                  : autoTags.length > 0
-                    ? autoTags
-                    : [fallbackTag];
-
-              const newPractice: PracticeVideo = {
-                id: createYtClientId('prac'),
-                title: v.title,
-                date: inferDateFromText(
-                  `${v.title} ${playlist.title}`,
-                  v.publishedAt || playlist.publishedAt
-                ),
-                youtubeId: v.videoId,
-                youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
-                youtubePlaylistId: playlist.id,
-                tags: finalTags,
-                memo: v.description
-                  ? v.description.slice(0, 180)
-                  : `${playlist.title} から取り込み`,
-                moments: [],
-              };
-              nextPractices.unshift(newPractice);
-              addedPractices += 1;
+            const rawClips: GameVideoClip[] = prebuiltClips
+              ? prebuiltClips
+              : videos.map((v, idx) => ({
+                  id: createYtClientId('clip'),
+                  label: inferClipLabelFromTitle(v.title, idx, videos.length),
+                  youtubeTitle: v.title,
+                  youtubeId: v.videoId,
+                  youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+                }));
+            const clips = rawClips.filter((c) => {
+              if (!c.youtubeId || globalGameVideoIds.has(c.youtubeId)) {
+                return false;
+              }
+              globalGameVideoIds.add(c.youtubeId);
+              return true;
             });
+
+            if (clips.length === 0) {
+              return;
+            }
+
+            const gameId = createYtClientId('game');
+            const opp =
+              opponentOverride?.trim() || inferOpponentFromTitle(playlist.title);
+            const matches =
+              aiOrganizedMatches && aiOrganizedMatches.length > 0
+                ? applyAiOrganizedMatches(
+                    [
+                      {
+                        id: 'import_tmp',
+                        label: '1試合目',
+                        teamUnit: '',
+                        opponent: opp,
+                        homeScore: 0,
+                        awayScore: 0,
+                        videos: clips,
+                        events: [],
+                      },
+                    ],
+                    aiOrganizedMatches,
+                    opp,
+                    aiFetchedTitles
+                  )
+                : autoGroupClipsIntoMatches(clips, opp);
+            const distinctOpponents = Array.from(
+              new Set(matches.map((m) => m.opponent).filter(Boolean))
+            );
+            const resolvedOpp =
+              (opp === '対戦相手' || opp === '練習試合') &&
+              distinctOpponents.length > 0
+                ? distinctOpponents.join('・')
+                : opp;
+            const newGame: GameRecord = {
+              id: gameId,
+              title: playlist.title,
+              date: inferDateFromText(
+                `${playlist.title} ${playlist.description}`,
+                playlist.publishedAt
+              ),
+              opponent: resolvedOpp,
+              category: '練習試合',
+              homeScore: 0,
+              awayScore: 0,
+              youtubePlaylistId: playlist.id,
+              notes: playlist.description ? playlist.description.slice(0, 180) : undefined,
+              matches,
+              videos: matches.flatMap((m) => m.videos),
+              events: [],
+            };
+            nextGames.unshift(newGame);
+            addedGames += 1;
+            latestGameId = gameId;
+            if (aiStatus === 'success') aiSucceeded += 1;
+            else if (aiStatus === 'failed') aiFailed += 1;
           }
         }
       );
@@ -727,7 +630,6 @@ export function YouTubeImportPanel({
       return {
         ...prev,
         games: nextGames,
-        practices: nextPractices,
       };
     });
 
@@ -735,13 +637,12 @@ export function YouTubeImportPanel({
       onSelectActiveGame(latestGameId);
     }
 
-    if (addedGames === 0 && updatedGames === 0 && addedPractices === 0) {
+    if (addedGames === 0 && updatedGames === 0) {
       onNotify('新しい動画はありませんでした（すべて取り込み済みです）', 'info');
     } else {
       const parts: string[] = [];
       if (addedGames > 0) parts.push(`試合 ${addedGames}件追加`);
       if (updatedGames > 0) parts.push(`試合 ${updatedGames}件更新`);
-      if (addedPractices > 0) parts.push(`練習 ${addedPractices}本追加`);
       notifyBatchImportOutcome({ parts, aiSucceeded, aiFailed });
     }
   };
@@ -771,8 +672,6 @@ export function YouTubeImportPanel({
 
   const importPlaylistSelection = async (options: {
     targets: YouTubePlaylistSummary[];
-    overrides: Record<string, 'game' | 'practice'>;
-    practiceTagsOverride?: string[];
     setImporting: (val: boolean) => void;
     setProgress: (val: string) => void;
     setError: (val: string) => void;
@@ -780,8 +679,6 @@ export function YouTubeImportPanel({
   }) => {
     const {
       targets,
-      overrides,
-      practiceTagsOverride,
       setImporting,
       setProgress,
       setError,
@@ -805,9 +702,7 @@ export function YouTubeImportPanel({
 
       const bundles: Array<{
         playlist: YouTubePlaylistSummary;
-        kind: 'game' | 'practice';
         videos: YouTubePlaylistVideoItem[];
-        tagsOverride?: string[];
         prebuiltClips?: GameVideoClip[];
         aiOrganizedMatches?: AiOrganizedMatchInput[];
         aiFetchedTitles?: Record<string, string>;
@@ -841,13 +736,12 @@ export function YouTubeImportPanel({
           }
         }
 
-        const kind = overrides[pl.id] ?? inferPlaylistKind(pl.title);
         let prebuiltClips: GameVideoClip[] | undefined;
         let aiOrganizedMatches: AiOrganizedMatchInput[] | undefined;
         let aiFetchedTitles: Record<string, string> | undefined;
         let aiStatus: 'success' | 'failed' | 'skipped' = 'skipped';
 
-        if (kind === 'game' && videos.length > 0) {
+        if (videos.length > 0) {
           const existingGame = data.games.find(
             (g) => g.youtubePlaylistId === pl.id
           );
@@ -907,18 +801,11 @@ export function YouTubeImportPanel({
 
         bundles.push({
           playlist: pl,
-          kind,
           videos,
           prebuiltClips,
           aiOrganizedMatches,
           aiFetchedTitles,
           aiStatus,
-          tagsOverride:
-            kind === 'practice' &&
-            practiceTagsOverride &&
-            practiceTagsOverride.length > 0
-              ? practiceTagsOverride
-              : undefined,
         });
       }
 
@@ -999,9 +886,8 @@ export function YouTubeImportPanel({
         return;
       }
 
-      const { nextKinds, initialSelected } = buildSelectionDefaults(found);
+      const { initialSelected } = buildSelectionDefaults(found);
       setBulkPlaylists(found);
-      setBulkKindOverrides(nextKinds);
       setBulkSelectedIds(initialSelected);
 
       if (found.length < detectedBulkIds.length) {
@@ -1028,8 +914,6 @@ export function YouTubeImportPanel({
     const targets = bulkPlaylists.filter((pl) => bulkSelectedIds.includes(pl.id));
     await importPlaylistSelection({
       targets,
-      overrides: bulkKindOverrides,
-      practiceTagsOverride: bulkPracticeTags,
       setImporting: setImportingBulk,
       setProgress: setBulkProgress,
       setError: setBulkError,
@@ -1382,64 +1266,9 @@ export function YouTubeImportPanel({
     if (
       !videoId &&
       playlistId &&
-      singleKind === 'game' &&
       data.games.some((g) => g.youtubePlaylistId === playlistId)
     ) {
       onNotify('この動画はすでに登録されています', 'info');
-      return;
-    }
-
-    if (singleKind === 'practice') {
-      if (!videoId) {
-        onNotify('練習動画のURL（1本の動画リンク）を入力してください', 'danger');
-        return;
-      }
-      const momentSec = singleMomentTime.trim()
-        ? parseTimeString(singleMomentTime)
-        : 0;
-      const newPractice: PracticeVideo = {
-        id: createYtClientId('prac'),
-        title: singleTitle.trim() || `練習動画 (${singleDate})`,
-        date: singleDate,
-        youtubeId: videoId,
-        youtubeUrl: trimmedUrl,
-        youtubePlaylistId: playlistId || undefined,
-        tags:
-          singleSelectedTags.length > 0 ? singleSelectedTags : ['#速攻'],
-        memo: singleMemo.trim() || undefined,
-        moments: singleMomentLabel.trim()
-          ? [
-              {
-                id: createYtClientId('pm'),
-                timestampSec: momentSec,
-                label: singleMomentLabel.trim(),
-              },
-            ]
-          : [],
-      };
-      let duplicateFound = false;
-      onUpdateData((prev) => {
-        if (collectAllRegisteredVideoIds(prev).has(videoId)) {
-          duplicateFound = true;
-          return prev;
-        }
-        return {
-          ...prev,
-          practices: [newPractice, ...prev.practices],
-        };
-      });
-      if (duplicateFound) {
-        onNotify('この動画はすでに登録されています', 'info');
-        return;
-      }
-      onNotify('練習動画を追加しました', 'success');
-      setSingleUrlInput('');
-      setSingleTitle('');
-      setSingleOpponent('');
-      setSingleMemo('');
-      setSingleMomentTime('');
-      setSingleMomentLabel('');
-      setSingleDateTouched(false);
       return;
     }
 
@@ -1737,9 +1566,6 @@ export function YouTubeImportPanel({
       setSingleClipLabel('');
       setSingleTitle('');
       setSingleOpponent('');
-      setSingleMemo('');
-      setSingleMomentTime('');
-      setSingleMomentLabel('');
       setSingleDateTouched(false);
     } finally {
       setSubmittingSingle(false);
@@ -2208,7 +2034,6 @@ export function YouTubeImportPanel({
           <PlaylistChecklistBox
             items={bulkPlaylists}
             selectedIds={bulkSelectedIds}
-            kindOverrides={bulkKindOverrides}
             data={data}
             importing={importingBulk}
             progressText={bulkProgress}
@@ -2225,44 +2050,9 @@ export function YouTubeImportPanel({
                   : [...prev, id]
               )
             }
-            onChangeKind={(id, kind) =>
-              setBulkKindOverrides((prev) => ({ ...prev, [id]: kind }))
-            }
             onOpenAsSummary={handleOpenPlaylistAsSummary}
             onImport={() => void handleImportSelectedBulkPlaylists()}
-          >
-            {bulkPlaylists.some(
-              (pl) =>
-                bulkSelectedIds.includes(pl.id) &&
-                (bulkKindOverrides[pl.id] ?? inferPlaylistKind(pl.title)) ===
-                  'practice'
-            ) && (
-              <div className="field-label">
-                <span>練習に付けるタグ（任意）</span>
-                <div className="chip-wrap">
-                  {data.practiceTags.map((tag) => {
-                    const active = bulkPracticeTags.includes(tag);
-                    return (
-                      <button
-                        key={tag}
-                        type="button"
-                        className={`filter-chip ${active ? 'is-active' : ''}`}
-                        onClick={() =>
-                          setBulkPracticeTags((prev) =>
-                            prev.includes(tag)
-                              ? prev.filter((t) => t !== tag)
-                              : [...prev, tag]
-                          )
-                        }
-                      >
-                        {tag}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </PlaylistChecklistBox>
+          />
         )}
       </section>
 
@@ -2273,23 +2063,6 @@ export function YouTubeImportPanel({
         <div className="block-title-row">
           <Link2 size={18} className="accent-icon" />
           <h3>動画URLを1本ずつ登録</h3>
-        </div>
-
-        <div className="subtab-bar">
-          <button
-            type="button"
-            className={`subtab-btn ${singleKind === 'practice' ? 'is-active' : ''}`}
-            onClick={() => setSingleKind('practice')}
-          >
-            練習動画として登録
-          </button>
-          <button
-            type="button"
-            className={`subtab-btn ${singleKind === 'game' ? 'is-active' : ''}`}
-            onClick={() => setSingleKind('game')}
-          >
-            試合動画として登録
-          </button>
         </div>
 
         <form
@@ -2307,38 +2080,34 @@ export function YouTubeImportPanel({
             />
           </label>
 
-          {singleKind === 'game' && (
-            <>
-              <label className="field-label">
-                <span>登録先の試合</span>
-                <select
-                  className="portal-select"
-                  value={singleTargetGameId}
-                  onChange={(e) => setSingleTargetGameId(e.target.value)}
-                >
-                  <option value="__new__">＋ 新しい試合として登録</option>
-                  {data.games.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      既存の試合に追加：{g.date} vs {g.opponent}
-                    </option>
-                  ))}
-                </select>
-              </label>
+          <label className="field-label">
+            <span>登録先の試合</span>
+            <select
+              className="portal-select"
+              value={singleTargetGameId}
+              onChange={(e) => setSingleTargetGameId(e.target.value)}
+            >
+              <option value="__new__">＋ 新しい試合として登録</option>
+              {data.games.map((g) => (
+                <option key={g.id} value={g.id}>
+                  既存の試合に追加：{g.date} vs {g.opponent}
+                </option>
+              ))}
+            </select>
+          </label>
 
-              <label className="field-label">
-                <span>動画ラベル（例：1Q, 2Q, 前半, 試合動画／空欄で自動判定）</span>
-                <input
-                  type="text"
-                  className="portal-input"
-                  value={singleClipLabel}
-                  onChange={(e) => setSingleClipLabel(e.target.value)}
-                  placeholder="空欄ならYouTubeタイトルやAIから自動判定"
-                />
-              </label>
-            </>
-          )}
+          <label className="field-label">
+            <span>動画ラベル（例：1Q, 2Q, 前半, 試合動画／空欄で自動判定）</span>
+            <input
+              type="text"
+              className="portal-input"
+              value={singleClipLabel}
+              onChange={(e) => setSingleClipLabel(e.target.value)}
+              placeholder="空欄ならYouTubeタイトルやAIから自動判定"
+            />
+          </label>
 
-          {(singleKind === 'practice' || singleTargetGameId === '__new__') && (
+          {singleTargetGameId === '__new__' && (
             <>
               <div className="two-col-row">
                 <label className="field-label">
@@ -2354,18 +2123,16 @@ export function YouTubeImportPanel({
                   />
                 </label>
 
-                {singleKind === 'game' && (
-                  <label className="field-label">
-                    <span>対戦相手</span>
-                    <input
-                      type="text"
-                      className="portal-input"
-                      value={singleOpponent}
-                      onChange={(e) => setSingleOpponent(e.target.value)}
-                      placeholder="例：城北高校"
-                    />
-                  </label>
-                )}
+                <label className="field-label">
+                  <span>対戦相手</span>
+                  <input
+                    type="text"
+                    className="portal-input"
+                    value={singleOpponent}
+                    onChange={(e) => setSingleOpponent(e.target.value)}
+                    placeholder="例：城北高校"
+                  />
+                </label>
               </div>
 
               <label className="field-label">
@@ -2375,89 +2142,20 @@ export function YouTubeImportPanel({
                   className="portal-input"
                   value={singleTitle}
                   onChange={(e) => setSingleTitle(e.target.value)}
-                  placeholder={
-                    singleKind === 'game'
-                      ? '例：練習試合 1本目'
-                      : '例：ゾーンプレス対策ドリル'
-                  }
+                  placeholder="例：練習試合 1本目"
                 />
               </label>
             </>
           )}
 
-          {singleKind === 'practice' && (
-            <>
-              <div className="field-label">
-                <span>タグ（タップで選択）</span>
-                <div className="chip-wrap">
-                  {data.practiceTags.map((tag) => {
-                    const active = singleSelectedTags.includes(tag);
-                    return (
-                      <button
-                        key={tag}
-                        type="button"
-                        className={`filter-chip ${active ? 'is-active' : ''}`}
-                        onClick={() =>
-                          setSingleSelectedTags((prev) =>
-                            prev.includes(tag)
-                              ? prev.filter((t) => t !== tag)
-                              : [...prev, tag]
-                          )
-                        }
-                      >
-                        {tag}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <label className="field-label">
-                <span>メモ（任意）</span>
-                <input
-                  type="text"
-                  className="portal-input"
-                  value={singleMemo}
-                  onChange={(e) => setSingleMemo(e.target.value)}
-                  placeholder="意識すべきポイントなど"
-                />
-              </label>
-
-              <div className="two-col-row">
-                <label className="field-label">
-                  <span>見どころ時刻（例 01:25）</span>
-                  <input
-                    type="text"
-                    className="portal-input"
-                    value={singleMomentTime}
-                    onChange={(e) => setSingleMomentTime(e.target.value)}
-                    placeholder="01:25"
-                  />
-                </label>
-                <label className="field-label">
-                  <span>見どころ内容</span>
-                  <input
-                    type="text"
-                    className="portal-input"
-                    value={singleMomentLabel}
-                    onChange={(e) => setSingleMomentLabel(e.target.value)}
-                    placeholder="例：ナイス合わせ"
-                  />
-                </label>
-              </div>
-            </>
-          )}
-
-          {singleKind === 'game' && (
-            <label className="ocr-checkbox-row">
-              <input
-                type="checkbox"
-                checked={autoOrganizeWithAi}
-                onChange={(e) => setAutoOrganizeWithAi(e.target.checked)}
-              />
-              <span>取り込み時にAIで試合・何Q・A/Bを自動整理する</span>
-            </label>
-          )}
+          <label className="ocr-checkbox-row">
+            <input
+              type="checkbox"
+              checked={autoOrganizeWithAi}
+              onChange={(e) => setAutoOrganizeWithAi(e.target.checked)}
+            />
+            <span>取り込み時にAIで試合・何Q・A/Bを自動整理する</span>
+          </label>
 
           <button
             type="submit"

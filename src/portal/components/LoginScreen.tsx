@@ -61,7 +61,7 @@ export function LoginScreen({
         </div>
         <h1 className="portal-auth-title">{teamName}</h1>
         <p className="portal-auth-subtitle">
-          試合動画・練習動画・スタッツ共有ポータル
+          試合動画・スタッツ共有ポータル
         </p>
 
         {isFirebaseMode ? (

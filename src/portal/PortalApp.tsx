@@ -8,7 +8,6 @@ import {
   LogOut,
   RotateCcw,
   Trophy,
-  Video,
 } from 'lucide-react';
 import type { AuthUser, PortalData, PortalTab } from './types';
 import {
@@ -49,7 +48,6 @@ import { AccessDeniedScreen } from './components/AccessDeniedScreen';
 import { PinGate } from './components/PinGate';
 import { HomeView } from './components/HomeView';
 import { GamesView } from './components/GamesView';
-import { PracticesView } from './components/PracticesView';
 import { AdminView } from './components/AdminView';
 import { OwnerHistoryView } from './components/OwnerHistoryView';
 
@@ -142,9 +140,7 @@ export function PortalApp() {
   const [pinUnlocked, setPinUnlocked] = useState(false);
 
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
-  const [selectedPracticeId, setSelectedPracticeId] = useState<string | null>(null);
   const [gameSearchQuery, setGameSearchQuery] = useState('');
-  const [practiceSearchQuery, setPracticeSearchQuery] = useState('');
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const notify = (
@@ -258,12 +254,6 @@ export function PortalApp() {
       !targetData.games.some((g) => g.id === selectedGameId)
     ) {
       setSelectedGameId(null);
-    }
-    if (
-      selectedPracticeId &&
-      !targetData.practices.some((p) => p.id === selectedPracticeId)
-    ) {
-      setSelectedPracticeId(null);
     }
   };
 
@@ -385,7 +375,6 @@ export function PortalApp() {
     setPinUnlocked(false);
     setActiveTab('home');
     setSelectedGameId(null);
-    setSelectedPracticeId(null);
 
     if (isFirebaseConfigured) {
       void signOutFromFirebase();
@@ -409,7 +398,6 @@ export function PortalApp() {
   const handleTabChange = (tab: PortalTab) => {
     setActiveTab(tab);
     if (tab !== 'games') setSelectedGameId(null);
-    if (tab !== 'practices') setSelectedPracticeId(null);
   };
 
   const handleUpdateGameVideoUrl = (
@@ -441,21 +429,6 @@ export function PortalApp() {
       }),
     }));
     notify('YouTube動画を反映しました', 'success');
-  };
-
-  const handleUpdatePracticeUrl = (practiceId: string, youtubeUrl: string) => {
-    const videoId = extractYouTubeVideoId(youtubeUrl);
-    if (!videoId) {
-      notify('有効なYouTube URLを確認してください', 'danger');
-      return;
-    }
-    updateData((prev) => ({
-      ...prev,
-      practices: prev.practices.map((p) =>
-        p.id === practiceId ? { ...p, youtubeId: videoId, youtubeUrl } : p
-      ),
-    }));
-    notify('練習のYouTube動画を反映しました', 'success');
   };
 
   // 1. 認証読み込み中
@@ -643,24 +616,14 @@ export function PortalApp() {
         {activeTab === 'home' && (
           <HomeView
             games={data.games}
-            practices={data.practices}
             onOpenGame={(gameId) => {
               setSelectedGameId(gameId);
               setActiveTab('games');
-            }}
-            onOpenPractice={(practiceId) => {
-              setSelectedPracticeId(practiceId);
-              setActiveTab('practices');
             }}
             onSearchGames={(q) => {
               setGameSearchQuery(q);
               setSelectedGameId(null);
               setActiveTab('games');
-            }}
-            onSearchPractices={(q) => {
-              setPracticeSearchQuery(q);
-              setSelectedPracticeId(null);
-              setActiveTab('practices');
             }}
             onGoToAdmin={() => setActiveTab('admin')}
           />
@@ -676,19 +639,6 @@ export function PortalApp() {
             searchQuery={gameSearchQuery}
             onSearchQueryChange={setGameSearchQuery}
             onUpdateGameVideoUrl={handleUpdateGameVideoUrl}
-          />
-        )}
-
-        {activeTab === 'practices' && (
-          <PracticesView
-            key={selectedPracticeId ?? 'list'}
-            practices={data.practices}
-            practiceTags={data.practiceTags}
-            selectedPracticeId={selectedPracticeId}
-            onSelectPractice={setSelectedPracticeId}
-            searchQuery={practiceSearchQuery}
-            onSearchQueryChange={setPracticeSearchQuery}
-            onUpdatePracticeUrl={handleUpdatePracticeUrl}
           />
         )}
 
@@ -738,15 +688,6 @@ export function PortalApp() {
           >
             <Trophy size={20} />
             <span>試合</span>
-          </button>
-
-          <button
-            type="button"
-            className={`nav-tab-btn ${activeTab === 'practices' ? 'is-active' : ''}`}
-            onClick={() => handleTabChange('practices')}
-          >
-            <Video size={20} />
-            <span>練習</span>
           </button>
 
           <button
