@@ -33,6 +33,7 @@ import {
 } from '../utils/matches';
 import type { AiOrganizedMatchInput } from '../utils/matches';
 import { computeMatchSummary } from '../utils/stats';
+import { canUseLocalSandbox } from '../utils/sandbox';
 import {
   fetchYouTubeVideoTitles,
   organizeMatchesWithAi,
@@ -768,6 +769,10 @@ export function BulkMatchOrganizerPanel({
     {}
   );
   const cancelRequestedRef = useRef(false);
+  const sandboxAvailable = canUseLocalSandbox({
+    isDev: import.meta.env.DEV,
+    hostname: typeof window !== 'undefined' ? window.location.hostname : '',
+  });
 
   const rows = useMemo(
     () =>
@@ -1019,7 +1024,9 @@ export function BulkMatchOrganizerPanel({
           <div className="bulk-org-safety-note">
             <ShieldCheck size={16} />
             <span>
-              すでに登録したスコア・スタッツは消さずに守ります。先に試したいときは画面上の「テストモード」をONにしてからお試しください。
+              {sandboxAvailable
+                ? 'すでに登録したスコア・スタッツは消さずに守ります。先に試したいときは画面上の「テストモード」をONにしてからお試しください。'
+                : 'すでに登録したスコア・スタッツは消さずに守ります。'}
             </span>
           </div>
 
