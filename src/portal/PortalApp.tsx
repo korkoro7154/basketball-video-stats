@@ -24,9 +24,16 @@ import {
 } from './firebase';
 import {
   savePortalDataToCloud,
+  savePortalRevisionToCloud,
   subscribePortalData,
 } from './services/portalStore';
 import { extractYouTubeVideoId } from './utils/youtube';
+import {
+  buildPortalRevision,
+  buildPortalUrlWithoutHistoryMode,
+  isHistoryModeSearch,
+  isOwnerEmail,
+} from './utils/revisions';
 import {
   canUseLocalSandbox,
   clearSandboxData,
@@ -44,6 +51,7 @@ import { HomeView } from './components/HomeView';
 import { GamesView } from './components/GamesView';
 import { PracticesView } from './components/PracticesView';
 import { AdminView } from './components/AdminView';
+import { OwnerHistoryView } from './components/OwnerHistoryView';
 
 const AUTH_SESSION_KEY = 'hoops_portal_auth_v1';
 
@@ -120,7 +128,13 @@ export function PortalApp() {
   const sandboxActive = sandboxAllowed && sandboxMode;
   const sandboxActiveRef = useRef(sandboxActive);
   const latestDataRef = useRef<PortalData>(localData);
+  const currentUserRef = useRef<AuthUser | null>(null);
 
+  const [isHistoryMode, setIsHistoryMode] = useState<boolean>(() =>
+    typeof window !== 'undefined'
+      ? isHistoryModeSearch(window.location.search)
+      : false
+  );
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState('');
 
@@ -217,6 +231,27 @@ export function PortalApp() {
     latestDataRef.current = data;
   }, [data]);
 
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onPopState = () => {
+      setIsHistoryMode(isHistoryModeSearch(window.location.search));
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const handleExitHistoryMode = () => {
+    if (typeof window !== 'undefined') {
+      const nextUrl = buildPortalUrlWithoutHistoryMode(window.location.href);
+      window.history.replaceState(null, '', nextUrl);
+    }
+    setIsHistoryMode(false);
+  };
+
   const syncSelectionForData = (targetData: PortalData) => {
     if (
       selectedGameId &&
@@ -268,13 +303,15 @@ export function PortalApp() {
   const updateData = async (
     updater: (prev: PortalData) => PortalData
   ): Promise<boolean> => {
-    const next = updater(latestDataRef.current);
-    latestDataRef.current = next;
-
     const writeTarget = resolvePortalWriteTarget({
       isFirebaseConfigured,
       sandboxActive: sandboxActiveRef.current,
     });
+    const beforeSnapshot =
+      writeTarget === 'cloud' ? clonePortalData(latestDataRef.current) : null;
+
+    const next = updater(latestDataRef.current);
+    latestDataRef.current = next;
 
     if (writeTarget === 'sandbox') {
       setSandboxData(next);
@@ -291,12 +328,31 @@ export function PortalApp() {
       setCloudData(next);
       try {
         await savePortalDataToCloud(next);
-        return true;
       } catch (err) {
         console.error('Cloud save error:', err);
         notify('クラウドへの保存に失敗しました。通信状況をご確認ください。', 'danger');
         return false;
       }
+
+      if (!sandboxActiveRef.current && beforeSnapshot) {
+        try {
+          const actor = currentUserRef.current;
+          const revision = buildPortalRevision({
+            before: beforeSnapshot,
+            after: next,
+            actorEmail: actor?.email || '',
+            actorName: actor?.name || actor?.email || '不明なユーザー',
+          });
+          if (revision) {
+            void savePortalRevisionToCloud(revision).catch((revErr) => {
+              console.error('Revision save error:', revErr);
+            });
+          }
+        } catch (revErr) {
+          console.error('Revision build error:', revErr);
+        }
+      }
+      return true;
     }
 
     setLocalData(next);
@@ -472,6 +528,30 @@ export function PortalApp() {
         <div className="portal-spinner" />
         <p>クラウドからチームデータを読み込んでいます...</p>
       </div>
+    );
+  }
+
+  // 6. オーナー専用 変更履歴・復元モード (?mode=history)
+  if (isHistoryMode) {
+    return (
+      <OwnerHistoryView
+        teamName={data.teamName}
+        currentUser={currentUser}
+        isOwner={isOwnerEmail(currentUser.email, data)}
+        isFirebaseConfigured={isFirebaseConfigured}
+        sandboxActive={sandboxActive}
+        currentData={data}
+        onExitHistoryMode={handleExitHistoryMode}
+        onExitSandboxMode={sandboxActive ? handleExitSandboxMode : undefined}
+        onLogout={handleLogout}
+        onRestoreComplete={(restoredData) => {
+          if (!sandboxActiveRef.current) {
+            latestDataRef.current = restoredData;
+            setCloudData(restoredData);
+            syncSelectionForData(restoredData);
+          }
+        }}
+      />
     );
   }
 

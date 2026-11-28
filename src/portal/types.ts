@@ -133,3 +133,22 @@ export interface PortalData {
   ownerEmails: string[];
   allowedEmails: string[];
 }
+
+export interface PortalRevisionStats {
+  gameDays: number;
+  matches: number;
+  scoredMatches: number;
+  players: number;
+  practices: number;
+}
+
+export interface PortalRevision {
+  id: string;
+  createdAt: string;
+  actorEmail: string;
+  actorName: string;
+  actionSummary: string;
+  changes: string[];
+  beforeSnapshot: PortalData;
+  afterStats: PortalRevisionStats;
+}

@@ -121,6 +121,21 @@
   - `GameVideoClip`（動画）：`id`, `label`, `youtubeTitle?`, `youtubeId`, `youtubeUrl`, `homeScore?`, `awayScore?`, `manualBoxScore?`
   - 後方互換のため `syncGameFromMatches()` で親階層のスコア・動画・イベント等とも同期を保つ。
 - **`PracticeVideo`（練習動画）**：`id`, `title`, `date`, `youtubeId`, `youtubeUrl`, `youtubePlaylistId?`, `tags`, `memo?`, `moments` (`PracticeMoment[]`)
+- **`PortalRevision`（変更履歴・`portal/main/revisions/{revisionId}`）**：`id`, `createdAt`, `actorEmail`, `actorName`, `actionSummary`, `changes`（最大10件）, `beforeSnapshot`（変更前の `PortalData`）, `afterStats`（`gameDays`, `matches`, `scoredMatches`, `players`, `practices`）
+
+### オーナー専用 変更履歴＆ワンタップ復元（`?mode=history`）
+- **1MB上限対策のサブコレクション保存**：
+  - `portal/main` ドキュメント内には履歴を持たせず、Firestore サブコレクション `portal/main/revisions/{revisionId}` に 1変更＝1ドキュメントで保存する。
+- **自動記録（`PortalApp.tsx` / `portalStore.ts` / `src/portal/utils/revisions.ts`）**：
+  - `PortalApp.tsx` の `updateData` で本番クラウド（`target === 'cloud'`）への保存成功後、`summarizePortalDiff(before, after)` により差分があるときだけ変更者情報（`actorEmail`, `actorName`）と変更前スナップショット（`beforeSnapshot`）を自動記録する。
+  - ローカルテストモード（サンドボックス）ON 中は履歴も Firestore へ一切書き込まない。
+  - 履歴の保存に失敗した場合でも、ポータル本体のデータ保存は失敗させず安全に継続する。
+- **専用URL・権限・復元フロー（`OwnerHistoryView`）**：
+  - 通常4タブの画面内には入口（ボタン・リンク）を一切表示せず、URL に `?mode=history` を付けた場合のみ専用画面へ切り替える。
+  - 未ログイン時は通常のログイン画面を表示し、ログイン済みでもオーナー以外（`isOwnerEmail()` が偽）には「オーナー専用ページです（閲覧権限がありません）」と「通常のポータルへ戻る」ボタンのみ表示する。
+  - オーナー本人は新しい順に最大30件の履歴（日時 JST・変更者・1行要約・変更詳細）を閲覧でき、確認ダイアログ付きの **「この変更前に戻す」** で現在の最新データを「復元前の控え」として新しい履歴に保存してから `beforeSnapshot` を `portal/main` へ復元できる。履歴が30件を超えている場合は31件目以降の古い履歴を整理できる。
+- **Firestore ルール（`firestore.rules`）**：
+  - 既存の `match /portal/main` ルールを維持したまま、`match /portal/main/revisions/{revisionId}` を追加し、`create` は許可メンバー（オーナー含む）、`read`・`delete` はオーナー（`kokoronan7@gmail.com` または `portal/main` の `ownerEmails`）のみに限定、`update` は不可（改ざん防止）とする（※本番適用時は Firebase Console 側へ `firestore.rules` の反映が必要）。
 
 ### ローカル管理者用 Firestore 管理スクリプト（`scripts/portal-db.mjs`）
 - **目的**：管理者がローカルPCから Firestore の `portal/main` ドキュメントを安全に確認・バックアップ・更新・復元するための CLI ツール（`npm run portal:db -- <command>` でも実行可能）。
@@ -152,6 +167,7 @@
 - [x] 本番サイトの「管理・設定 → 選手名簿」へのチーム選手名簿登録
 - [x] ローカル管理者用 Firestore 管理スクリプト（`scripts/portal-db.mjs`）と秘密鍵・バックアップの二重公開防止ガード（`.gitignore`・`scripts/parallel.mjs`）
 - [x] 本番ドメイン経由の Firebase Auth 認証中継（`vercel.json` の `/__/auth/*`・`/__/firebase/*` プロキシと `authDomain` 自動切替による学校Wi-Fi・Safari 対策）
+- [x] オーナー専用 変更履歴＆ワンタップ復元（`?mode=history`・`portal/main/revisions` サブコレクション保存・確認付き復元＆復元前控え自動保存・`firestore.rules` 対応）
 
 ### 残りの運用タスク（本番サイトでの操作）
 - [ ] スマホや iPad から本番サイトを開き、未登録の試合日（電機大高校・9/23 美原・国分寺など）で写真取り込み・AI自動整理・表示確認・過去データの整理を行う

@@ -1,6 +1,38 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isSignedInWithEmail() {
+      return request.auth != null && request.auth.token.email is string;
+    }
+
+    function normalizedEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function portalMainPath() {
+      return /databases/$(database)/documents/portal/main;
+    }
+
+    function isPortalOwner() {
+      return isSignedInWithEmail() && (
+        normalizedEmail() == 'kokoronan7@gmail.com' ||
+        (exists(portalMainPath()) &&
+          'ownerEmails' in get(portalMainPath()).data &&
+          get(portalMainPath()).data.ownerEmails is list &&
+          normalizedEmail() in get(portalMainPath()).data.ownerEmails)
+      );
+    }
+
+    function isPortalMember() {
+      return isPortalOwner() || (
+        isSignedInWithEmail() &&
+        exists(portalMainPath()) &&
+        'allowedEmails' in get(portalMainPath()).data &&
+        get(portalMainPath()).data.allowedEmails is list &&
+        normalizedEmail() in get(portalMainPath()).data.allowedEmails
+      );
+    }
+
     match /portal/main {
       allow read, write: if request.auth != null && (
         request.auth.token.email.lower() == 'kokoronan7@gmail.com' ||
@@ -8,6 +40,12 @@ service cloud.firestore {
           (request.auth.token.email.lower() in resource.data.allowedEmails ||
            request.auth.token.email.lower() in resource.data.ownerEmails))
       );
+    }
+
+    match /portal/main/revisions/{revisionId} {
+      allow create: if isPortalMember();
+      allow read, delete: if isPortalOwner();
+      allow update: if false;
     }
   }
 }
